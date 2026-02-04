@@ -1,0 +1,1879 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RBAC Authorization Visualization</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js"></script>
+    <style>
+        :root {
+            --bg-primary: #0d1117;
+            --bg-secondary: #161b22;
+            --bg-elevated: #21262d;
+            --color-role: #58a6ff;
+            --color-permission: #3fb950;
+            --color-context: #d29922;
+            --color-endpoint: #a371f7;
+            --color-tag: #6e7681;
+            --text-primary: #e6edf3;
+            --text-secondary: #8b949e;
+            --border-primary: #30363d;
+            --accent: #f778ba;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: linear-gradient(135deg, var(--bg-primary) 0%, #0a0f14 100%);
+            color: var(--text-primary);
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        .container {
+            display: flex;
+            height: 100vh;
+        }
+
+        #cy {
+            flex: 1;
+            background: radial-gradient(ellipse at center, var(--bg-secondary) 0%, var(--bg-primary) 100%);
+            position: relative;
+        }
+
+        /* Legend Overlay */
+        .legend-overlay {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(22, 27, 34, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 12px;
+            padding: 15px;
+            z-index: 1000;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            min-width: 180px;
+            transition: all 0.3s ease;
+        }
+
+        .legend-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+
+        .legend-header h3 {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin: 0;
+        }
+
+        .legend-toggle {
+            background: transparent;
+            border: 1px solid var(--border-primary);
+            color: var(--text-secondary);
+            width: 24px;
+            height: 24px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            line-height: 1;
+            transition: all 0.2s ease;
+        }
+
+        .legend-toggle:hover {
+            background: var(--bg-elevated);
+            color: var(--text-primary);
+        }
+
+        .legend-content {
+            transition: all 0.3s ease;
+            overflow: hidden;
+        }
+
+        .legend-content.collapsed {
+            max-height: 0;
+            opacity: 0;
+            margin-top: 0;
+        }
+
+        .legend-section {
+            margin-bottom: 12px;
+        }
+
+        .legend-section:last-child {
+            margin-bottom: 0;
+        }
+
+        .legend-section-title {
+            font-size: 0.7rem;
+            color: var(--text-secondary);
+            margin-bottom: 6px;
+            opacity: 0.7;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            margin-bottom: 6px;
+            font-size: 0.8rem;
+        }
+
+        .legend-color {
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            margin-right: 10px;
+            box-shadow: 0 0 8px currentColor;
+        }
+
+        .legend-color.role { background: var(--color-role); color: var(--color-role); }
+        .legend-color.permission { background: var(--color-permission); color: var(--color-permission); }
+        .legend-color.context { background: var(--color-context); color: var(--color-context); }
+        .legend-color.endpoint { background: var(--color-endpoint); color: var(--color-endpoint); }
+
+        .legend-line {
+            width: 24px;
+            height: 3px;
+            margin-right: 10px;
+            border-radius: 2px;
+        }
+
+        .legend-line.solid {
+            background: var(--color-role);
+        }
+
+        .legend-line.dashed {
+            background: repeating-linear-gradient(
+                90deg,
+                var(--color-context) 0px,
+                var(--color-context) 6px,
+                transparent 6px,
+                transparent 10px
+            );
+        }
+
+        .legend-line.dotted {
+            background: repeating-linear-gradient(
+                90deg,
+                var(--color-endpoint) 0px,
+                var(--color-endpoint) 3px,
+                transparent 3px,
+                transparent 6px
+            );
+        }
+
+        .sidebar {
+            width: 350px;
+            background: rgba(22, 27, 34, 0.95);
+            backdrop-filter: blur(20px);
+            padding: 20px;
+            overflow-y: auto;
+            border-left: 1px solid var(--border-primary);
+        }
+
+        .search-box {
+            width: 100%;
+            padding: 12px 16px;
+            border: 1px solid var(--border-primary);
+            border-radius: 8px;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            font-size: 14px;
+            margin-bottom: 15px;
+            transition: all 0.2s ease;
+        }
+
+        .search-box:focus {
+            outline: none;
+            border-color: var(--color-role);
+            box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.2);
+        }
+
+        .search-box::placeholder {
+            color: var(--text-secondary);
+        }
+
+        .details-panel {
+            margin-top: 20px;
+            padding: 16px;
+            background: var(--bg-primary);
+            border-radius: 12px;
+            border: 1px solid var(--border-primary);
+            min-height: 200px;
+        }
+
+        .details-panel h2 {
+            font-size: 0.9rem;
+            margin-bottom: 15px;
+            color: var(--accent);
+        }
+
+        .details-panel .empty {
+            color: var(--text-secondary);
+            font-style: italic;
+        }
+
+        .detail-item {
+            margin-bottom: 14px;
+        }
+
+        .detail-label {
+            font-size: 0.7rem;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 5px;
+        }
+
+        .detail-value {
+            font-size: 0.9rem;
+            word-break: break-word;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 11px;
+            margin: 3px;
+            font-weight: 500;
+            border: 1px solid;
+        }
+
+        .badge.global {
+            background: rgba(88, 166, 255, 0.15);
+            color: var(--color-role);
+            border-color: var(--color-role);
+        }
+
+        .badge.contextual {
+            background: rgba(210, 153, 34, 0.15);
+            color: var(--color-context);
+            border-color: var(--color-context);
+        }
+
+        .badge.permission {
+            background: rgba(63, 185, 80, 0.15);
+            color: var(--color-permission);
+            border-color: var(--color-permission);
+        }
+
+        .badge.context {
+            background: rgba(210, 153, 34, 0.15);
+            color: var(--color-context);
+            border-color: var(--color-context);
+        }
+
+        .loading {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100%;
+            font-size: 1.2rem;
+            color: var(--text-secondary);
+        }
+
+        .error {
+            color: var(--accent);
+            padding: 20px;
+            text-align: center;
+        }
+
+        /* Scrollbar styling */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: var(--bg-primary);
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: var(--border-primary);
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--text-secondary);
+        }
+
+        .reset-view-btn {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(247, 120, 186, 0.9);
+            color: #fff;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            z-index: 1000;
+            box-shadow: 0 4px 12px rgba(247, 120, 186, 0.4);
+            transition: all 0.2s ease;
+        }
+
+        .reset-view-btn:hover {
+            background: rgba(247, 120, 186, 1);
+            transform: translateY(-1px);
+        }
+
+        .show-more-link {
+            display: inline-block;
+            margin-top: 8px;
+            color: var(--color-role);
+            font-size: 0.8rem;
+            text-decoration: none;
+            cursor: pointer;
+        }
+
+        .show-more-link:hover {
+            text-decoration: underline;
+        }
+
+        .badge.clickable {
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+
+        .badge.clickable:hover {
+            filter: brightness(1.3);
+            transform: scale(1.05);
+        }
+
+        .context-description {
+            white-space: pre-wrap;
+            max-height: 150px;
+            overflow-y: auto;
+            font-size: 0.85rem;
+            line-height: 1.4;
+            background: var(--bg-elevated);
+            padding: 8px;
+            border-radius: 6px;
+            margin-top: 4px;
+        }
+
+        .clickable-endpoint {
+            display: block;
+            margin-bottom: 4px;
+            padding: 4px 8px;
+            background: rgba(163, 113, 247, 0.15);
+            border: 1px solid var(--color-endpoint);
+            color: var(--color-endpoint);
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            transition: all 0.15s ease;
+        }
+
+        .clickable-endpoint:hover {
+            background: rgba(163, 113, 247, 0.3);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div id="cy">
+            <div class="loading">Loading RBAC schema...</div>
+            <div class="legend-overlay" id="legend-overlay">
+                <div class="legend-header">
+                    <h3>Legend</h3>
+                    <button class="legend-toggle" id="legend-toggle" onclick="toggleLegend()">−</button>
+                </div>
+                <div class="legend-content" id="legend-content">
+                    <div class="legend-section">
+                        <div class="legend-section-title">Node Types</div>
+                        <div class="legend-item"><div class="legend-color role"></div><span>Roles (<span id="stat-roles">0</span>)</span></div>
+                        <div class="legend-item"><div class="legend-color permission"></div><span>Permissions (<span id="stat-permissions">0</span>)</span></div>
+                        <div class="legend-item"><div class="legend-color endpoint"></div><span>Endpoints (<span id="stat-endpoints">0</span>)</span></div>
+                        <div class="legend-item"><div class="legend-color context"></div><span>Contexts (<span id="stat-contexts">0</span>)</span></div>
+                    </div>
+                    <div class="legend-section">
+                        <div class="legend-section-title">Edge Types</div>
+                        <div class="legend-item"><div class="legend-line solid"></div><span>Global (direct to endpoint)</span></div>
+                        <div class="legend-item"><div class="legend-line dashed"></div><span>Contextual (via context)</span></div>
+                        <div class="legend-item"><div class="legend-line dotted"></div><span>Wildcard implies</span></div>
+                    </div>
+                    <div class="legend-section">
+                        <div class="legend-section-title">Features</div>
+                        <div class="legend-item"><div class="legend-line solid"></div><span>Double-click any node for a deep dive</span></div>
+                    </div>
+                </div>
+            </div>
+            <button id="reset-view-btn" class="reset-view-btn" style="display: none;">
+                Reset View
+            </button>
+        </div>
+        <div class="sidebar">
+            <input type="text" class="search-box" id="search" placeholder="Search nodes...">
+
+            <div class="details-panel">
+                <h2>Node Details</h2>
+                <div id="details-content">
+                    <p class="empty">Click a node to see details</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const SCHEMA_URL = '{{SCHEMA_URL}}';
+
+        let cy = null;
+        let schema = null;
+        let resizeTimeout = null;
+        let selectedNode = null;
+        let isolationMode = false;
+        let savedPositions = null;
+
+        // Colors for node types (GitHub-inspired dark theme)
+        const colors = {
+            role: '#58a6ff',
+            permission: '#3fb950',
+            context: '#d29922',
+            endpoint: '#a371f7',
+            'tag-group': '#6e7681'
+        };
+
+        // Wildcard permission matching
+        const WILDCARD = "*";
+        const SEPARATOR = ":";
+
+        function implies(held, required) {
+            const heldParts = held.split(SEPARATOR);
+            const requiredParts = required.split(SEPARATOR);
+
+            for (let i = 0; i < heldParts.length; i++) {
+                if (heldParts[i] === WILDCARD) return true;
+                if (i >= requiredParts.length) return false;
+                if (heldParts[i] !== requiredParts[i]) return false;
+            }
+            return heldParts.length === requiredParts.length;
+        }
+
+        function isWildcardPermission(permission) {
+            return permission.includes(WILDCARD);
+        }
+
+        // Forward path traversal (for roles)
+        // Follows: Role -> Permission -> Context -> Endpoint (contextual)
+        //          Role -> Permission -> Endpoint (global direct)
+        function getForwardPath(node) {
+            const collected = cy.collection().union(node);
+            let frontier = cy.collection().union(node);
+
+            while (frontier.length > 0) {
+                // Get outgoing edges from frontier nodes
+                const outEdges = frontier.outgoers('edge');
+                collected.merge(outEdges);
+
+                // Get target nodes of those edges
+                const nextNodes = outEdges.targets().not(collected);
+                collected.merge(nextNodes);
+
+                frontier = nextNodes;
+            }
+
+            // Include parent nodes (tag-groups) of collected nodes
+            collected.nodes().forEach(n => {
+                const parent = n.parent();
+                if (parent.length > 0) {
+                    collected.merge(parent);
+                }
+            });
+
+            return collected;
+        }
+
+        // Backward path traversal (for contexts)
+        function getBackwardPath(node) {
+            const collected = cy.collection().union(node);
+            let frontier = cy.collection().union(node);
+
+            while (frontier.length > 0) {
+                // Get incoming edges to frontier nodes
+                const inEdges = frontier.incomers('edge');
+                collected.merge(inEdges);
+
+                // Get source nodes of those edges
+                const nextNodes = inEdges.sources().not(collected);
+                collected.merge(nextNodes);
+
+                frontier = nextNodes;
+            }
+
+            // Include parent nodes (tag-groups) of collected nodes
+            collected.nodes().forEach(n => {
+                const parent = n.parent();
+                if (parent.length > 0) {
+                    collected.merge(parent);
+                }
+            });
+
+            return collected;
+        }
+
+        // Bidirectional path traversal (for permissions/endpoints)
+        function getBidirectionalPath(node) {
+            return getForwardPath(node).union(getBackwardPath(node));
+        }
+
+        // Context path traversal: Permission -> Context -> Endpoint, and backward to Roles
+        function getContextPath(node) {
+            const collected = cy.collection().union(node);
+
+            // First, get forward path from context to endpoints
+            const contextEdges = node.outgoers('edge');
+            collected.merge(contextEdges);
+            const endpoints = contextEdges.targets();
+            collected.merge(endpoints);
+
+            // Get backward path from context to permissions (Permission -> Context edges)
+            const permContextEdges = node.incomers('edge').filter('[edgeType="permission-context"]');
+            collected.merge(permContextEdges);
+            const permissions = permContextEdges.sources();
+            collected.merge(permissions);
+
+            // Continue backward from permissions to roles
+            if (permissions.length > 0) {
+                let frontier = permissions;
+                while (frontier.length > 0) {
+                    const inEdges = frontier.incomers('edge');
+                    collected.merge(inEdges);
+                    const nextNodes = inEdges.sources().not(collected);
+                    collected.merge(nextNodes);
+                    frontier = nextNodes;
+                }
+            }
+
+            // Also get any direct global Permission -> Endpoint edges for collected endpoints
+            if (endpoints.length > 0) {
+                const directEdges = endpoints.incomers('edge').filter('[edgeType="direct"]');
+                collected.merge(directEdges);
+                const directPerms = directEdges.sources().not(collected);
+                collected.merge(directPerms);
+
+                // Continue backward from those permissions to roles
+                let frontier = directPerms;
+                while (frontier.length > 0) {
+                    const inEdges = frontier.incomers('edge');
+                    collected.merge(inEdges);
+                    const nextNodes = inEdges.sources().not(collected);
+                    collected.merge(nextNodes);
+                    frontier = nextNodes;
+                }
+            }
+
+            // Include parent nodes (tag-groups) of collected nodes
+            collected.nodes().forEach(n => {
+                const parent = n.parent();
+                if (parent.length > 0) {
+                    collected.merge(parent);
+                }
+            });
+
+            return collected;
+        }
+
+        // Node-type-aware isolation: Role → "What endpoints can this role access?"
+        function isolateRole(roleNode) {
+            const rolePermissions = roleNode.data('details').permissions;
+            const related = cy.collection().add(roleNode);
+
+            // Find all permission nodes this role grants (directly or via wildcard)
+            cy.nodes('[type="permission"]').forEach(permNode => {
+                const permName = permNode.data('details').name;
+                if (rolePermissions.some(rp => implies(rp.permission, permName))) {
+                    related.merge(permNode);
+                }
+            });
+
+            // Find all endpoints accessible via these permissions
+            cy.nodes('[type="endpoint"]').forEach(epNode => {
+                const epPerms = epNode.data('details').permissions;
+                if (epPerms.some(epPerm =>
+                    rolePermissions.some(rp => implies(rp.permission, epPerm))
+                )) {
+                    related.merge(epNode);
+                    // Add endpoint's contexts
+                    const contexts = epNode.data('details').contexts || [];
+                    contexts.forEach(ctxName => {
+                        const ctxNode = cy.getElementById(`context:${ctxName}`);
+                        if (ctxNode.length) related.merge(ctxNode);
+                    });
+                }
+            });
+
+            // Add connecting edges between related nodes
+            related.merge(related.edgesWith(related));
+
+            // Include parent nodes (tag-groups) of collected nodes
+            related.nodes().forEach(n => {
+                const parent = n.parent();
+                if (parent.length > 0) {
+                    related.merge(parent);
+                }
+            });
+
+            return related;
+        }
+
+        // Node-type-aware isolation: Permission → "What does this permission grant access to?"
+        function isolatePermission(permNode) {
+            const permName = permNode.data('details').name;
+            const related = cy.collection().add(permNode);
+
+            // Find all roles that grant this permission (directly or via wildcard)
+            cy.nodes('[type="role"]').forEach(roleNode => {
+                const rolePerms = roleNode.data('details').permissions;
+                if (rolePerms.some(rp => implies(rp.permission, permName))) {
+                    related.merge(roleNode);
+                }
+            });
+
+            // Find all endpoints protected by this permission
+            cy.nodes('[type="endpoint"]').forEach(epNode => {
+                const epPerms = epNode.data('details').permissions;
+                if (epPerms.includes(permName)) {
+                    related.merge(epNode);
+                    // Add endpoint's contexts
+                    const contexts = epNode.data('details').contexts || [];
+                    contexts.forEach(ctxName => {
+                        const ctxNode = cy.getElementById(`context:${ctxName}`);
+                        if (ctxNode.length) related.merge(ctxNode);
+                    });
+                }
+            });
+
+            // Add connecting edges between related nodes
+            related.merge(related.edgesWith(related));
+
+            // Include parent nodes (tag-groups) of collected nodes
+            related.nodes().forEach(n => {
+                const parent = n.parent();
+                if (parent.length > 0) {
+                    related.merge(parent);
+                }
+            });
+
+            return related;
+        }
+
+        // Node-type-aware isolation: Endpoint → "Who can access this endpoint?"
+        function isolateEndpoint(epNode) {
+            const epPerms = epNode.data('details').permissions;
+            const epContexts = epNode.data('details').contexts || [];
+            const related = cy.collection().add(epNode);
+
+            // Add permission nodes that protect this endpoint (exact match or wildcard that implies)
+            epPerms.forEach(requiredPerm => {
+                // Try exact match first
+                const exactNode = cy.getElementById(`permission:${requiredPerm}`);
+                if (exactNode.length) related.merge(exactNode);
+
+                // Also find wildcard permissions that imply this required permission
+                cy.nodes('[type="permission"]').forEach(permNode => {
+                    const permName = permNode.data('details').name;
+                    if (implies(permName, requiredPerm)) {
+                        related.merge(permNode);
+                    }
+                });
+            });
+
+            // Add context nodes that protect this endpoint
+            epContexts.forEach(ctxName => {
+                const ctxNode = cy.getElementById(`context:${ctxName}`);
+                if (ctxNode.length) related.merge(ctxNode);
+            });
+
+            // Find all roles that can access this endpoint
+            cy.nodes('[type="role"]').forEach(roleNode => {
+                const rolePerms = roleNode.data('details').permissions;
+                if (epPerms.some(epPerm =>
+                    rolePerms.some(rp => implies(rp.permission, epPerm))
+                )) {
+                    related.merge(roleNode);
+                }
+            });
+
+            // Add connecting edges between related nodes
+            related.merge(related.edgesWith(related));
+
+            // Include parent nodes (tag-groups) of collected nodes
+            related.nodes().forEach(n => {
+                const parent = n.parent();
+                if (parent.length > 0) {
+                    related.merge(parent);
+                }
+            });
+
+            return related;
+        }
+
+        // Highlight path based on node type
+        function highlightPath(node) {
+            resetHighlight();
+
+            const type = node.data('type');
+            let related;
+
+            switch (type) {
+                case 'role':
+                    related = getForwardPath(node);
+                    break;
+                case 'context':
+                    related = getContextPath(node);
+                    break;
+                case 'permission':
+                case 'endpoint':
+                    related = getBidirectionalPath(node);
+                    break;
+                default:
+                    related = node.closedNeighborhood();
+            }
+
+            cy.elements().addClass('faded');
+            related.removeClass('faded');
+            node.addClass('highlighted');
+        }
+
+        // Highlight paths for multiple selected nodes
+        function highlightMultiplePaths(nodes) {
+            resetHighlight();
+
+            let combined = cy.collection();
+            nodes.forEach(node => {
+                const type = node.data('type');
+                let related;
+                switch (type) {
+                    case 'role':
+                        related = getForwardPath(node);
+                        break;
+                    case 'context':
+                        related = getContextPath(node);
+                        break;
+                    case 'permission':
+                    case 'endpoint':
+                        related = getBidirectionalPath(node);
+                        break;
+                    default:
+                        related = node.closedNeighborhood();
+                }
+                combined = combined.union(related);
+            });
+
+            cy.elements().addClass('faded');
+            combined.removeClass('faded');
+            nodes.addClass('highlighted');
+        }
+
+        // Enter isolation mode - hide unrelated nodes, center related
+        function enterIsolationMode(node) {
+            const type = node.data('type');
+
+            // Context nodes don't support isolation mode
+            if (type === 'context' || type === 'tag-group') return;
+
+            isolationMode = true;
+            selectedNode = node;
+
+            // Use node-type-aware isolation functions
+            let related;
+            switch (type) {
+                case 'role':
+                    related = isolateRole(node);
+                    break;
+                case 'permission':
+                    related = isolatePermission(node);
+                    break;
+                case 'endpoint':
+                    related = isolateEndpoint(node);
+                    break;
+                default:
+                    related = node.closedNeighborhood();
+            }
+
+            // Save original positions before layout
+            savedPositions = {};
+            cy.nodes().forEach(n => {
+                savedPositions[n.id()] = { ...n.position() };
+            });
+
+            // Hide unrelated elements (not just fade)
+            cy.elements().not(related).addClass('hidden');
+            related.removeClass('faded hidden');
+            node.addClass('highlighted');
+
+            // Apply custom left-to-right layout based on node types
+            const relatedNodes = related.filter('node').not('[type="tag-group"]');
+            const typeOrder = { role: 0, permission: 1, context: 2, endpoint: 3 };
+
+            // Group nodes by type
+            const nodesByType = { role: [], permission: [], endpoint: [], context: [] };
+            relatedNodes.forEach(n => {
+                const type = n.data('type');
+                if (nodesByType[type]) {
+                    nodesByType[type].push(n);
+                }
+            });
+
+            // Calculate layout dimensions
+            const container = document.getElementById('cy');
+            const padding = 80;
+            const availableWidth = container.clientWidth - (padding * 2);
+            const availableHeight = container.clientHeight - (padding * 2);
+
+            // Count columns that have nodes
+            const activeColumns = Object.values(nodesByType).filter(arr => arr.length > 0).length;
+            const columnSpacing = activeColumns > 1 ? availableWidth / (activeColumns - 1) : 0;
+
+            // Position nodes
+            let colIndex = 0;
+            ['role', 'permission', 'context', 'endpoint'].forEach(type => {
+                const nodes = nodesByType[type];
+                if (nodes.length === 0) return;
+
+                const x = padding + (colIndex * columnSpacing);
+                const rowSpacing = Math.min(80, availableHeight / (nodes.length + 1));
+                const startY = (availableHeight - (nodes.length - 1) * rowSpacing) / 2 + padding;
+
+                nodes.forEach((n, i) => {
+                    n.animate({
+                        position: { x: x, y: startY + (i * rowSpacing) },
+                        duration: 300,
+                        easing: 'ease-out'
+                    });
+                });
+
+                colIndex++;
+            });
+
+            // Fit view after animation
+            setTimeout(() => {
+                cy.fit(related, 50);
+            }, 320);
+
+            // Show reset button
+            document.getElementById('reset-view-btn').style.display = 'block';
+
+            // Show details
+            showDetails(node);
+        }
+
+        // Exit isolation mode - show all nodes, reset view
+        function exitIsolationMode() {
+            if (!isolationMode) return;
+
+            isolationMode = false;
+            selectedNode = null;
+
+            // Show all elements
+            cy.elements().removeClass('hidden faded highlighted');
+
+            // Clear Cytoscape selection
+            cy.$(':selected').unselect();
+
+            // Restore original positions
+            if (savedPositions) {
+                cy.nodes().forEach(n => {
+                    const pos = savedPositions[n.id()];
+                    if (pos) {
+                        n.animate({
+                            position: pos,
+                            duration: 300,
+                            easing: 'ease-out'
+                        });
+                    }
+                });
+                savedPositions = null;
+
+                // Fit view after animation
+                setTimeout(() => {
+                    cy.fit(50);
+                }, 320);
+            } else {
+                // Fallback: just fit
+                cy.animate({
+                    fit: { padding: 50 },
+                    duration: 300,
+                    easing: 'ease-out'
+                });
+            }
+
+            // Hide reset button
+            document.getElementById('reset-view-btn').style.display = 'none';
+
+            // Clear details
+            clearDetails();
+        }
+
+        // Show message when multiple nodes selected
+        function showMultiSelectMessage(count) {
+            document.getElementById('details-content').innerHTML = `
+                <p class="empty">${count} nodes selected</p>
+                <p class="empty" style="font-size: 0.8rem; margin-top: 8px;">
+                    Click on canvas to deselect all
+                </p>
+            `;
+        }
+
+        // HTML escape utility to prevent XSS
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Render a collapsible list with show more/less
+        function renderCollapsibleList(label, items, renderItem, defaultCount = 5) {
+            const safeLabel = escapeHtml(label);
+            const count = items.length;
+            const id = `collapse-${label.replace(/\s/g, '-').toLowerCase()}-${Math.random().toString(36).substr(2, 9)}`;
+
+            if (count === 0) {
+                return `
+                    <div class="detail-item">
+                        <div class="detail-label">${safeLabel} (0)</div>
+                        <div class="detail-value"><em>None</em></div>
+                    </div>
+                `;
+            }
+
+            const visibleItems = items.slice(0, defaultCount);
+            const hiddenItems = items.slice(defaultCount);
+
+            return `
+                <div class="detail-item">
+                    <div class="detail-label">${safeLabel} (${count})</div>
+                    <div class="detail-value">
+                        <div id="${id}-visible">
+                            ${visibleItems.map(renderItem).join('')}
+                        </div>
+                        ${hiddenItems.length > 0 ? `
+                            <div id="${id}-hidden" style="display: none;">
+                                ${hiddenItems.map(renderItem).join('')}
+                            </div>
+                            <a href="#" class="show-more-link" data-collapse-id="${id}" data-hidden-count="${hiddenItems.length}">
+                                Show ${hiddenItems.length} more
+                            </a>
+                        ` : ''}
+                    </div>
+                </div>
+            `;
+        }
+
+        // Toggle collapsible section (called via event delegation)
+        function toggleCollapse(link) {
+            const id = link.dataset.collapseId;
+            const hiddenCount = link.dataset.hiddenCount;
+            const hidden = document.getElementById(`${id}-hidden`);
+
+            if (!hidden) return;
+
+            if (hidden.style.display === 'none') {
+                hidden.style.display = 'block';
+                link.textContent = 'Show less';
+            } else {
+                hidden.style.display = 'none';
+                link.textContent = `Show ${hiddenCount} more`;
+            }
+        }
+
+        // Select a node by ID (for clickable resources)
+        function selectNodeById(nodeId) {
+            const node = cy.getElementById(nodeId);
+            if (node.length > 0) {
+                // Exit isolation mode if active
+                if (isolationMode) {
+                    exitIsolationMode();
+                }
+
+                // Clear previous selection
+                cy.$(':selected').unselect();
+
+                // Select the node
+                node.select();
+                selectedNode = node;
+                highlightPath(node);
+                showDetails(node);
+
+                // Pan to node with animation
+                cy.animate({
+                    center: { eles: node },
+                    duration: 300
+                });
+            }
+        }
+
+        // Find endpoints that a permission grants access to
+        function findEndpointsForPermission(permName) {
+            return schema.endpoints.filter(e =>
+                e.permissions.some(p => p === permName || implies(permName, p))
+            );
+        }
+
+        // Find roles that have access to an endpoint
+        function findRolesForEndpoint(endpoint) {
+            const result = [];
+            schema.roles.forEach(role => {
+                const hasAccess = endpoint.permissions.some(reqPerm =>
+                    role.permissions.some(p => implies(p.permission, reqPerm))
+                );
+                if (hasAccess) {
+                    result.push(role);
+                }
+            });
+            return result;
+        }
+
+        // Find endpoints accessible by a role
+        function findEndpointsForRole(roleName) {
+            const role = schema.roles.find(r => r.name === roleName);
+            if (!role) return [];
+
+            return schema.endpoints.filter(endpoint =>
+                endpoint.permissions.some(reqPerm =>
+                    role.permissions.some(p => implies(p.permission, reqPerm))
+                )
+            );
+        }
+
+        // Find contexts required for endpoints a role can access
+        function findContextsForRole(roleName) {
+            const endpoints = findEndpointsForRole(roleName);
+            const contextNames = new Set();
+            endpoints.forEach(e => e.contexts.forEach(c => contextNames.add(c)));
+            return schema.contexts.filter(c => contextNames.has(c.name));
+        }
+
+        // Toggle legend visibility
+        function toggleLegend() {
+            const content = document.getElementById('legend-content');
+            const toggle = document.getElementById('legend-toggle');
+            content.classList.toggle('collapsed');
+            toggle.textContent = content.classList.contains('collapsed') ? '+' : '−';
+        }
+
+        // Build cytoscape elements from schema
+        function buildElements(schema) {
+            const elements = [];
+            const nodes = new Set();
+            const permissionNodes = new Map(); // Track permission nodes for wildcard matching
+
+            // Calculate responsive column positions
+            const container = document.getElementById('cy');
+            const containerWidth = container.clientWidth;
+            const padding = 80;
+            const availableWidth = containerWidth - (padding * 2);
+            const columnSpacing = availableWidth / 3; // 4 columns, 3 gaps
+
+            const columnX = {
+                role: padding,
+                permission: padding + columnSpacing,
+                context: padding + (columnSpacing * 2),
+                endpoint: padding + (columnSpacing * 3)
+            };
+
+            // Count nodes per type for Y distribution
+            const counts = {
+                role: schema.roles.length,
+                permission: schema.permissions.length,
+                endpoint: schema.endpoints.length,
+                context: schema.contexts.length
+            };
+
+            // Track index per type for Y calculation
+            const indices = { role: 0, permission: 0, endpoint: 0, context: 0 };
+
+            // Calculate Y position for a node type
+            function getY(type) {
+                const count = counts[type];
+                const index = indices[type]++;
+                const spacing = Math.max(100, 500 / Math.max(count, 1));
+                return 100 + (index * spacing);
+            }
+
+            // Collect unique tags for compound nodes
+            const tagSet = new Set();
+            schema.endpoints.forEach(e => {
+                if (e.tags && e.tags.length > 0) {
+                    e.tags.forEach(t => tagSet.add(t));
+                }
+            });
+
+            // Create parent nodes for each tag (compound nodes)
+            tagSet.forEach(tag => {
+                elements.push({
+                    data: {
+                        id: `tag:${tag}`,
+                        label: tag,
+                        type: 'tag-group'
+                    }
+                });
+            });
+
+            // Add role nodes
+            schema.roles.forEach(role => {
+                const nodeId = `role:${role.name}`;
+                if (!nodes.has(nodeId)) {
+                    nodes.add(nodeId);
+                    elements.push({
+                        data: {
+                            id: nodeId,
+                            label: role.name,
+                            type: 'role',
+                            details: role
+                        },
+                        position: { x: columnX.role, y: getY('role') }
+                    });
+                }
+
+                // Add edges from role to permissions
+                role.permissions.forEach(perm => {
+                    const permNodeId = `permission:${perm.permission}`;
+                    elements.push({
+                        data: {
+                            id: `${nodeId}->${permNodeId}`,
+                            source: nodeId,
+                            target: permNodeId,
+                            scope: perm.scope,
+                            edgeType: 'role-permission'
+                        }
+                    });
+                });
+            });
+
+            // Add permission nodes
+            schema.permissions.forEach(perm => {
+                const nodeId = `permission:${perm.name}`;
+                if (!nodes.has(nodeId)) {
+                    nodes.add(nodeId);
+                    permissionNodes.set(perm.name, nodeId);
+                    elements.push({
+                        data: {
+                            id: nodeId,
+                            label: perm.name,
+                            type: 'permission',
+                            details: perm
+                        },
+                        position: { x: columnX.permission, y: getY('permission') }
+                    });
+                }
+            });
+
+            // Add context nodes
+            schema.contexts.forEach(ctx => {
+                const nodeId = `context:${ctx.name}`;
+                if (!nodes.has(nodeId)) {
+                    nodes.add(nodeId);
+                    elements.push({
+                        data: {
+                            id: nodeId,
+                            label: ctx.name,
+                            type: 'context',
+                            details: ctx
+                        },
+                        position: { x: columnX.context, y: getY('context') }
+                    });
+                }
+            });
+
+            // Add endpoint nodes and edges
+            schema.endpoints.forEach(endpoint => {
+                const nodeId = `endpoint:${endpoint.method}:${endpoint.path}`;
+                if (!nodes.has(nodeId)) {
+                    nodes.add(nodeId);
+                    const nodeData = {
+                        id: nodeId,
+                        label: `${endpoint.method} ${endpoint.path}`,
+                        type: 'endpoint',
+                        details: endpoint
+                    };
+
+                    // Add to parent compound node if endpoint has tags
+                    if (endpoint.tags && endpoint.tags.length > 0) {
+                        nodeData.parent = `tag:${endpoint.tags[0]}`;
+                    }
+
+                    elements.push({
+                        data: nodeData,
+                        position: { x: columnX.endpoint, y: getY('endpoint') }
+                    });
+                }
+
+                // Track edges to avoid duplicates
+                const addedEdges = new Set();
+
+                // Helper to check if a permission has global scope from any role
+                function hasGlobalScope(permName) {
+                    const permInfo = schema.permissions.find(p => p.name === permName);
+                    if (permInfo?.granted_by?.some(g => g.scope === 'global')) {
+                        return true;
+                    }
+                    // Check wildcard permissions that imply this permission
+                    for (const wp of schema.permissions) {
+                        if (isWildcardPermission(wp.name) && implies(wp.name, permName)) {
+                            if (wp.granted_by?.some(g => g.scope === 'global')) {
+                                return true;
+                            }
+                        }
+                    }
+                    return false;
+                }
+
+                // Add edges based on permission scope
+                endpoint.permissions.forEach(requiredPerm => {
+                    const permNodeId = `permission:${requiredPerm}`;
+                    const permNodeExists = nodes.has(permNodeId);
+
+                    // Only create edges from exact permission if it exists
+                    if (permNodeExists) {
+                        // Check THIS permission's direct grants only (not wildcards)
+                        const permInfo = schema.permissions.find(p => p.name === requiredPerm);
+                        const hasDirectGlobalGrant = permInfo?.granted_by?.some(g => g.scope === 'global');
+                        const hasDirectContextualGrant = permInfo?.granted_by?.some(g => g.scope === 'contextual');
+
+                        // Create global edge only if THIS permission has direct global grants
+                        if (hasDirectGlobalGrant) {
+                            const edgeId = `${permNodeId}->${nodeId}`;
+                            if (!addedEdges.has(edgeId)) {
+                                addedEdges.add(edgeId);
+                                elements.push({
+                                    data: {
+                                        id: edgeId,
+                                        source: permNodeId,
+                                        target: nodeId,
+                                        scope: 'global',
+                                        edgeType: 'direct'
+                                    }
+                                });
+                            }
+                        }
+
+                        // Create contextual edges if THIS permission has contextual grants
+                        if (hasDirectContextualGrant) {
+                            if (endpoint.contexts.length > 0) {
+                                // Has contexts: create Permission -> Context edges
+                                endpoint.contexts.forEach(ctx => {
+                                    const ctxNodeId = `context:${ctx}`;
+                                    const edgeId = `${permNodeId}->${ctxNodeId}`;
+                                    if (!addedEdges.has(edgeId)) {
+                                        addedEdges.add(edgeId);
+                                        elements.push({
+                                            data: {
+                                                id: edgeId,
+                                                source: permNodeId,
+                                                target: ctxNodeId,
+                                                scope: 'contextual',
+                                                edgeType: 'permission-context'
+                                            }
+                                        });
+                                    }
+                                });
+                            } else {
+                                // No contexts: direct edge to endpoint (styled as contextual)
+                                const edgeId = `${permNodeId}->${nodeId}`;
+                                if (!addedEdges.has(edgeId)) {
+                                    addedEdges.add(edgeId);
+                                    elements.push({
+                                        data: {
+                                            id: edgeId,
+                                            source: permNodeId,
+                                            target: nodeId,
+                                            scope: 'contextual',
+                                            edgeType: 'direct'
+                                        }
+                                    });
+                                }
+                            }
+                        }
+                    }
+
+                    // Check for wildcard matches (always, regardless of exact permission existence)
+                    permissionNodes.forEach((wildcardNodeId, heldPerm) => {
+                        if (isWildcardPermission(heldPerm) && implies(heldPerm, requiredPerm)) {
+                            // Check the wildcard permission's actual grants directly
+                            const wildcardPermInfo = schema.permissions.find(p => p.name === heldPerm);
+                            const wildcardHasGlobal = wildcardPermInfo?.granted_by?.some(g => g.scope === 'global');
+                            const wildcardHasContextual = wildcardPermInfo?.granted_by?.some(g => g.scope === 'contextual');
+
+                            // Create global edge if wildcard has global grants
+                            if (wildcardHasGlobal) {
+                                const wildcardEdgeId = `${wildcardNodeId}->wildcard->${nodeId}`;
+                                if (!addedEdges.has(wildcardEdgeId)) {
+                                    addedEdges.add(wildcardEdgeId);
+                                    elements.push({
+                                        data: {
+                                            id: wildcardEdgeId,
+                                            source: wildcardNodeId,
+                                            target: nodeId,
+                                            scope: 'global',
+                                            edgeType: 'wildcard'
+                                        }
+                                    });
+                                }
+                            }
+
+                            // Create contextual edges if wildcard has contextual grants
+                            if (wildcardHasContextual) {
+                                if (endpoint.contexts.length > 0) {
+                                    // Wildcard with contextual scope -> through context
+                                    endpoint.contexts.forEach(ctx => {
+                                        const ctxNodeId = `context:${ctx}`;
+                                        const edgeId = `${wildcardNodeId}->wildcard->${ctxNodeId}`;
+                                        if (!addedEdges.has(edgeId)) {
+                                            addedEdges.add(edgeId);
+                                            elements.push({
+                                                data: {
+                                                    id: edgeId,
+                                                    source: wildcardNodeId,
+                                                    target: ctxNodeId,
+                                                    scope: 'contextual',
+                                                    edgeType: 'permission-context'
+                                                }
+                                            });
+                                        }
+                                    });
+                                } else {
+                                    // No contexts, contextual wildcard -> direct to endpoint
+                                    const wildcardEdgeId = `${wildcardNodeId}->wildcard-ctx->${nodeId}`;
+                                    if (!addedEdges.has(wildcardEdgeId)) {
+                                        addedEdges.add(wildcardEdgeId);
+                                        elements.push({
+                                            data: {
+                                                id: wildcardEdgeId,
+                                                source: wildcardNodeId,
+                                                target: nodeId,
+                                                scope: 'contextual',
+                                                edgeType: 'wildcard'
+                                            }
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    });
+                });
+
+                // Context -> Endpoint edges (always created for endpoints with contexts)
+                endpoint.contexts.forEach(ctx => {
+                    const ctxNodeId = `context:${ctx}`;
+                    const edgeId = `${ctxNodeId}->${nodeId}`;
+                    if (!addedEdges.has(edgeId)) {
+                        addedEdges.add(edgeId);
+                        elements.push({
+                            data: {
+                                id: edgeId,
+                                source: ctxNodeId,
+                                target: nodeId,
+                                edgeType: 'context'
+                            }
+                        });
+                    }
+                });
+            });
+
+            return elements;
+        }
+
+        // Initialize cytoscape
+        function initCytoscape(elements) {
+            cy = cytoscape({
+                container: document.getElementById('cy'),
+                elements: elements,
+                boxSelectionEnabled: true,
+                selectionType: 'additive',
+                style: [
+                    {
+                        selector: 'node',
+                        style: {
+                            'shape': 'round-rectangle',
+                            'label': 'data(label)',
+                            'text-valign': 'center',
+                            'text-halign': 'center',
+                            'background-color': ele => colors[ele.data('type')] || '#6e7681',
+                            'color': '#fff',
+                            'font-size': '10px',
+                            'text-wrap': 'wrap',
+                            'text-max-width': '120px',
+                            'width': '80px',
+                            'height': '80px',
+                            'border-width': 2,
+                            'border-color': ele => colors[ele.data('type')] || '#6e7681',
+                            'shadow-blur': 15,
+                            'shadow-color': ele => colors[ele.data('type')] || '#6e7681',
+                            'shadow-opacity': 0.4,
+                            'shadow-offset-x': 0,
+                            'shadow-offset-y': 0
+                        }
+                    },
+                    {
+                        selector: 'node[type="endpoint"]',
+                        style: {
+                            'shape': 'round-rectangle',
+                            'width': '160px',
+                            'height': '50px',
+                            'text-max-width': '150px'
+                        }
+                    },
+                    {
+                        selector: 'node[type="role"]',
+                        style: {
+                            'width': '100px',
+                            'height': '50px',
+                            'text-max-width': '90px'
+                        }
+                    },
+                    {
+                        selector: 'node[type="permission"]',
+                        style: {
+                            'width': '120px',
+                            'height': '50px',
+                            'text-max-width': '110px'
+                        }
+                    },
+                    {
+                        selector: 'node[type="context"]',
+                        style: {
+                            'width': '100px',
+                            'height': '50px',
+                            'text-max-width': '90px'
+                        }
+                    },
+                    {
+                        selector: 'node[type="tag-group"]',
+                        style: {
+                            'shape': 'round-rectangle',
+                            'background-opacity': 0.1,
+                            'border-width': 2,
+                            'border-color': '#6e7681',
+                            'border-style': 'dashed',
+                            'padding': '20px',
+                            'text-valign': 'top',
+                            'text-halign': 'center',
+                            'font-weight': 'bold',
+                            'font-size': '12px',
+                            'color': '#8b949e',
+                            'shadow-opacity': 0
+                        }
+                    },
+                    {
+                        selector: 'edge',
+                        style: {
+                            'width': 2,
+                            'line-color': '#484f58',
+                            'target-arrow-color': '#484f58',
+                            'target-arrow-shape': 'triangle',
+                            'curve-style': 'bezier',
+                            'arrow-scale': 1,
+                            'opacity': 0.8
+                        }
+                    },
+                    {
+                        selector: 'edge[scope="global"]',
+                        style: {
+                            'line-color': '#58a6ff',
+                            'target-arrow-color': '#58a6ff',
+                            'line-style': 'solid'
+                        }
+                    },
+                    {
+                        selector: 'edge[scope="contextual"]',
+                        style: {
+                            'line-color': '#d29922',
+                            'target-arrow-color': '#d29922',
+                            'line-style': 'dashed'
+                        }
+                    },
+                    {
+                        selector: 'edge[edgeType="wildcard"]',
+                        style: {
+                            'line-color': '#a371f7',
+                            'target-arrow-color': '#a371f7',
+                            'line-style': 'dotted',
+                            'opacity': 0.7
+                        }
+                    },
+                    {
+                        selector: 'edge[edgeType="permission-context"]',
+                        style: {
+                            'line-color': '#d29922',
+                            'target-arrow-color': '#d29922',
+                            'line-style': 'dashed'
+                        }
+                    },
+                    {
+                        selector: '.highlighted',
+                        style: {
+                            'opacity': 1,
+                            'border-width': 4,
+                            'border-color': '#f778ba',
+                            'shadow-color': '#f778ba',
+                            'shadow-opacity': 0.8,
+                            'z-index': 999
+                        }
+                    },
+                    {
+                        selector: '.faded',
+                        style: {
+                            'opacity': 0.15
+                        }
+                    },
+                    {
+                        selector: '.hidden',
+                        style: {
+                            'display': 'none'
+                        }
+                    }
+                ],
+                layout: {
+                    name: 'preset',
+                    fit: true,
+                    padding: 50
+                }
+            });
+
+            // Click handler for nodes - supports toggle deselect and multi-select
+            cy.on('tap', 'node', function(evt) {
+                const node = evt.target;
+                if (node.data('type') === 'tag-group') return;
+
+                // Check for multi-select (Ctrl/Cmd held creates multiple :selected)
+                const selectedNodes = cy.$(':selected');
+
+                if (selectedNodes.length > 1) {
+                    // Multi-select: highlight union of paths, show count
+                    highlightMultiplePaths(selectedNodes);
+                    showMultiSelectMessage(selectedNodes.length);
+                    selectedNode = null;
+                } else if (selectedNode && selectedNode.id() === node.id()) {
+                    // Second click on same node - deselect
+                    cy.$(':selected').unselect();  // Clear Cytoscape selection
+                    selectedNode = null;
+                    resetHighlight();
+                    clearDetails();
+                } else {
+                    // First click or different node - select
+                    cy.$(':selected').unselect();  // Clear previous selection
+                    node.select();  // Select in Cytoscape
+                    selectedNode = node;
+                    highlightPath(node);
+                    showDetails(node);
+                }
+            });
+
+            // Click on background to reset
+            cy.on('tap', function(evt) {
+                if (evt.target === cy) {
+                    cy.$(':selected').unselect();  // Clear Cytoscape selection
+                    selectedNode = null;
+                    resetHighlight();
+                    clearDetails();
+                }
+            });
+
+            // Double-click handler for isolation mode
+            cy.on('dblclick', 'node', function(evt) {
+                const node = evt.target;
+                const type = node.data('type');
+                if (type === 'tag-group' || type === 'context') return;
+                if (isolationMode) return;  // Prevent re-entry during isolation
+
+                enterIsolationMode(node);
+            });
+
+            // Double-click on background to exit isolation
+            cy.on('dblclick', function(evt) {
+                if (evt.target === cy && isolationMode) {
+                    exitIsolationMode();
+                }
+            });
+        }
+
+        // Highlight connected nodes and edges (now uses directional path)
+        function highlightConnections(node) {
+            highlightPath(node);
+        }
+
+        // Reset highlighting
+        function resetHighlight() {
+            cy.elements().removeClass('faded highlighted');
+        }
+
+        // Clear details panel
+        function clearDetails() {
+            document.getElementById('details-content').innerHTML = '<p class="empty">Click a node to see details</p>';
+        }
+
+        // Show node details in sidebar
+        function showDetails(node) {
+            const type = node.data('type');
+            const details = node.data('details');
+            let html = '';
+
+            switch (type) {
+                case 'role':
+                    const roleEndpoints = findEndpointsForRole(details.name);
+                    const roleContexts = findContextsForRole(details.name);
+
+                    html = `
+                        <div class="detail-item">
+                            <div class="detail-label">Role Name</div>
+                            <div class="detail-value">${escapeHtml(details.name)}</div>
+                        </div>
+                        ${renderCollapsibleList(
+                            'Permissions',
+                            details.permissions,
+                            p => `<span class="badge clickable permission" onclick="selectNodeById('permission:${escapeHtml(p.permission)}')">${escapeHtml(p.permission)} (${escapeHtml(p.scope)})</span>`
+                        )}
+                        ${renderCollapsibleList(
+                            'Endpoints Accessible',
+                            roleEndpoints,
+                            e => `<span class="clickable-endpoint" onclick="selectNodeById('endpoint:${escapeHtml(e.method)}:${escapeHtml(e.path)}')">${escapeHtml(e.method)} ${escapeHtml(e.path)}</span>`
+                        )}
+                        ${renderCollapsibleList(
+                            'Contexts Required',
+                            roleContexts,
+                            c => `<span class="badge clickable context" onclick="selectNodeById('context:${escapeHtml(c.name)}')">${escapeHtml(c.name)}</span>`
+                        )}
+                    `;
+                    break;
+
+                case 'permission':
+                    const permEndpoints = findEndpointsForPermission(details.name);
+
+                    html = `
+                        <div class="detail-item">
+                            <div class="detail-label">Permission Name</div>
+                            <div class="detail-value">${escapeHtml(details.name)}</div>
+                        </div>
+                        ${renderCollapsibleList(
+                            'Granted by Roles',
+                            details.granted_by,
+                            g => `<span class="badge clickable ${escapeHtml(g.scope)}" onclick="selectNodeById('role:${escapeHtml(g.role)}')">${escapeHtml(g.role)} (${escapeHtml(g.scope)})</span>`
+                        )}
+                        ${renderCollapsibleList(
+                            'Endpoints Requiring This',
+                            permEndpoints,
+                            e => `<span class="clickable-endpoint" onclick="selectNodeById('endpoint:${escapeHtml(e.method)}:${escapeHtml(e.path)}')">${escapeHtml(e.method)} ${escapeHtml(e.path)}</span>`
+                        )}
+                    `;
+                    break;
+
+                case 'context':
+                    // Find endpoints guarded by this context
+                    const guardedEndpoints = schema.endpoints.filter(e => e.contexts.includes(details.name));
+
+                    html = `
+                        <div class="detail-item">
+                            <div class="detail-label">Context Name</div>
+                            <div class="detail-value">${escapeHtml(details.name)}</div>
+                        </div>
+                        ${details.description ? `
+                        <div class="detail-item">
+                            <div class="detail-label">Description</div>
+                            <div class="context-description">${escapeHtml(details.description)}</div>
+                        </div>
+                        ` : ''}
+                        ${renderCollapsibleList(
+                            'Endpoints Guarded',
+                            guardedEndpoints,
+                            e => `<span class="clickable-endpoint" onclick="selectNodeById('endpoint:${escapeHtml(e.method)}:${escapeHtml(e.path)}')">${escapeHtml(e.method)} ${escapeHtml(e.path)}</span>`
+                        )}
+                    `;
+                    break;
+
+                case 'endpoint':
+                    const endpointRoles = findRolesForEndpoint(details);
+
+                    html = `
+                        <div class="detail-item">
+                            <div class="detail-label">Endpoint</div>
+                            <div class="detail-value">${escapeHtml(details.method)} ${escapeHtml(details.path)}</div>
+                        </div>
+                        ${details.summary ? `
+                        <div class="detail-item">
+                            <div class="detail-label">Summary</div>
+                            <div class="detail-value">${escapeHtml(details.summary)}</div>
+                        </div>
+                        ` : ''}
+                        ${details.tags && details.tags.length > 0 ? `
+                        <div class="detail-item">
+                            <div class="detail-label">Tags</div>
+                            <div class="detail-value">${details.tags.map(t => escapeHtml(t)).join(', ')}</div>
+                        </div>
+                        ` : ''}
+                        ${renderCollapsibleList(
+                            'Required Permissions',
+                            details.permissions,
+                            p => `<span class="badge clickable permission" onclick="selectNodeById('permission:${escapeHtml(p)}')">${escapeHtml(p)}</span>`
+                        )}
+                        ${renderCollapsibleList(
+                            'Required Contexts',
+                            details.contexts,
+                            c => `<span class="badge clickable context" onclick="selectNodeById('context:${escapeHtml(c)}')">${escapeHtml(c)}</span>`
+                        )}
+                        ${renderCollapsibleList(
+                            'Roles with Access',
+                            endpointRoles,
+                            r => `<span class="badge clickable global" onclick="selectNodeById('role:${escapeHtml(r.name)}')">${escapeHtml(r.name)}</span>`
+                        )}
+                    `;
+                    break;
+            }
+
+            document.getElementById('details-content').innerHTML = html;
+        }
+
+        // Search nodes
+        function searchNodes(query) {
+            resetHighlight();
+            if (!query) {
+                cy.elements().removeClass('faded highlighted');
+                return;
+            }
+
+            // Normalize query - trim and lowercase
+            query = query.trim().toLowerCase();
+            if (!query) {
+                cy.elements().removeClass('faded highlighted');
+                return;
+            }
+
+            // Find matching nodes
+            const matchingNodes = cy.nodes().filter(node => {
+                const label = (node.data('label') || '').toLowerCase();
+                return label.includes(query);
+            });
+
+            if (matchingNodes.length === 0) {
+                // No matches - fade everything
+                cy.elements().addClass('faded');
+                return;
+            }
+
+            // Collect all related elements for matching nodes
+            let related = cy.collection();
+            matchingNodes.forEach(node => {
+                const type = node.data('type');
+                let nodeRelated;
+                switch (type) {
+                    case 'role':
+                        nodeRelated = getForwardPath(node);
+                        break;
+                    case 'context':
+                        nodeRelated = getContextPath(node);
+                        break;
+                    case 'permission':
+                    case 'endpoint':
+                        nodeRelated = getBidirectionalPath(node);
+                        break;
+                    default:
+                        nodeRelated = node.closedNeighborhood();
+                }
+                related = related.union(nodeRelated);
+            });
+
+            // Fade all, then unfade related
+            cy.elements().addClass('faded');
+            related.removeClass('faded');
+            matchingNodes.addClass('highlighted');
+        }
+
+        // Update stats
+        function updateStats(schema) {
+            document.getElementById('stat-roles').textContent = schema.roles.length;
+            document.getElementById('stat-permissions').textContent = schema.permissions.length;
+            document.getElementById('stat-contexts').textContent = schema.contexts.length;
+            document.getElementById('stat-endpoints').textContent = schema.endpoints.length;
+        }
+
+        // Handle window resize
+        function handleResize() {
+            clearTimeout(resizeTimeout);
+            resizeTimeout = setTimeout(() => {
+                if (cy && schema) {
+                    const elements = buildElements(schema);
+                    cy.json({ elements });
+                    cy.fit(50);
+                }
+            }, 250);
+        }
+
+        // Load schema and initialize
+        async function init() {
+            try {
+                const response = await fetch(SCHEMA_URL);
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                schema = await response.json();
+
+                // Clear loading message but keep legend overlay
+                const loadingEl = document.querySelector('#cy .loading');
+                if (loadingEl) {
+                    loadingEl.remove();
+                }
+
+                const elements = buildElements(schema);
+                initCytoscape(elements);
+                updateStats(schema);
+
+                // Setup search
+                const searchInput = document.getElementById('search');
+                searchInput.addEventListener('input', (e) => {
+                    searchNodes(e.target.value);
+                });
+
+                // Prevent browser shortcuts (like "/" for quick find) from intercepting input
+                searchInput.addEventListener('keydown', (e) => {
+                    e.stopPropagation();
+                });
+
+                // Setup resize handler
+                window.addEventListener('resize', handleResize);
+
+                // Escape key to exit isolation mode
+                document.addEventListener('keydown', function(evt) {
+                    if (evt.key === 'Escape' && isolationMode) {
+                        exitIsolationMode();
+                    }
+                });
+
+                // Reset View button handler
+                document.getElementById('reset-view-btn').addEventListener('click', exitIsolationMode);
+
+                // Event delegation for show-more/less links in details panel
+                document.getElementById('details-content').addEventListener('click', function(evt) {
+                    if (evt.target.classList.contains('show-more-link')) {
+                        evt.preventDefault();
+                        toggleCollapse(evt.target);
+                    }
+                });
+
+            } catch (error) {
+                console.error('Failed to load schema:', error);
+                document.getElementById('cy').innerHTML =
+                    `<div class="error">
+                        <h2>Failed to load RBAC schema</h2>
+                        <p>${error.message}</p>
+                    </div>`;
+            }
+        }
+
+        // Start
+        init();
+    </script>
+</body>
+</html>

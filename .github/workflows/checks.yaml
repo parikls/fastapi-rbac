@@ -1,0 +1,30 @@
+name: Checks
+
+on: workflow_call
+
+jobs:
+  lint:
+    name: Style & Types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install poetry
+        run: pip install "poetry<3"
+
+      - name: Install dependencies
+        run: poetry install --with dev
+
+      - name: Install pre-commit
+        run: pip install pre-commit
+
+      - name: Run pre-commit
+        run: pre-commit run --all-files
+
+      - name: Run tests
+        run: pytest -v tests/

@@ -2,6 +2,14 @@
 
 Role-based access control with contextual authorization for FastAPI.
 
+Library IS NOT responsible for authentication. You can use any authentication mechanism you want.
+
+  What you need to provide:
+  - A dependency that returns the authenticated user's roles as `set[str]`
+  - Permission definitions per role
+  - Use `RBACRouter` instead of `APIRouter` for protected routes
+  - Define permissions and context checks per endpoint
+
 ## Installation
 
 ```bash
@@ -17,23 +25,23 @@ from fastapi_rbac import (
     RBACAuthz, RBACRouter, Global, Contextual, ContextualAuthz
 )
 
-# 1. Define your user model
+# 1. You might have your user model (or you may not, we don't care)
 class User:
     def __init__(self, user_id: str, roles: set[str]):
         self.user_id = user_id
         self.roles = roles
 
-# 2. Define your authentication dependencies
-# The library only needs roles - you can authenticate however you like
+# 2. Assuming you have your own dependency that returns a user instance
 async def get_current_user() -> User:
     # Your authentication logic here
     return User(user_id="user-1", roles={"viewer"})
 
+# 3. Dependency that library **REQUIRES**. **MUST** return a set of user roles
 async def get_current_user_roles() -> set[str]:
     user = await get_current_user()
     return user.roles
 
-# 3. Define role permissions
+# 4. Define your roles permissions
 PERMISSIONS = {
     "admin": {
         Global("report:*"),         # Admin can do anything with reports
@@ -43,13 +51,12 @@ PERMISSIONS = {
     },
 }
 
-# 4. Create a context check (for contextual permissions)
-# Context classes are responsible for their own authentication via FastAPI DI
+# 5. Create context authorization checks
 class ReportAccessContext(ContextualAuthz):
     def __init__(
         self,
         report_id: int,  # <-- Injected from path parameter
-        user: Annotated[User, Depends(get_current_user)],  # Your auth dependency
+        user: Annotated[User, Depends(get_current_user)],  # Your own way how to get the user if you need it
     ):
         self.user = user
         self.report_id = report_id
@@ -59,7 +66,7 @@ class ReportAccessContext(ContextualAuthz):
         allowed_reports = {1, 2, 3}  # e.g., query from database
         return self.report_id in allowed_reports
 
-# 5. Create your app and configure RBAC
+# 6. Configure RBAC
 app = FastAPI()
 
 RBACAuthz(
@@ -69,7 +76,7 @@ RBACAuthz(
     ui_path="/_rbac",  # Optional: mount visualization UI
 )
 
-# 6. Create protected routes
+# 7. Create protected routes
 router = RBACRouter(permissions={"report:read"}, contexts=[ReportAccessContext])
 
 @router.get("/reports/{report_id}")
@@ -82,8 +89,6 @@ async def create_report():
 
 app.include_router(router, prefix="/api")
 ```
-
-> **Note:** The library doesn't care how you authenticate - whether via dependency, middleware, JWT decode, or any other method. You just need to provide a dependency that returns the user's roles as `set[str]`. Context classes are responsible for their own authentication and can use any FastAPI dependency pattern.
 
 ## Permission Scopes
 
@@ -150,7 +155,7 @@ When a request hits an RBAC-protected endpoint:
    └── roles_dependency runs → User's roles (set[str]) available
 
 2. Permission Check
-   └── Does user have ANY grant (global or contextual) for required permission?
+   └── Does user have ANY grant (scoped or wildcard) for required permission?
        ├── No  → 403 Forbidden
        └── Yes → Continue
 
@@ -199,8 +204,8 @@ uvicorn examples.basic_app:app --reload
 
 Then open your browser:
 
-- **http://localhost:8000/docs** - OpenAPI docs to test the API
-- **http://localhost:8000/_rbac** - Authorization visualization UI
+- **http://localhost:18000/docs** - OpenAPI docs to test the API
+- **http://localhost:18000/_rbac** - Authorization visualization UI
 
 ### Test with different users
 
@@ -208,15 +213,15 @@ The example uses `X-Token` header for authentication:
 
 ```bash
 # As admin (has Global("*") - full access)
-curl -H "X-Token: admin-token" http://localhost:8000/reports
-curl -H "X-Token: admin-token" http://localhost:8000/reports/1
+curl -H "X-Token: admin-token" http://localhost:18000/reports
+curl -H "X-Token: admin-token" http://localhost:18000/reports/1
 
 # As user (has Contextual permissions - can only access own reports)
-curl -H "X-Token: user-token" http://localhost:8000/reports/1  # OK (owns report 1)
-curl -H "X-Token: user-token" http://localhost:8000/reports/3  # 403 (doesn't own report 3)
+curl -H "X-Token: user-token" http://localhost:18000/reports/1  # OK (owns report 1)
+curl -H "X-Token: user-token" http://localhost:18000/reports/3  # 403 (doesn't own report 3)
 
 # As viewer (has Contextual read - can only read own reports)
-curl -H "X-Token: viewer-token" http://localhost:8000/reports/1  # 403 (doesn't own any)
+curl -H "X-Token: viewer-token" http://localhost:18000/reports/1  # 403 (doesn't own any)
 ```
 
 ## Visualization UI

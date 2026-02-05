@@ -3,7 +3,7 @@ name: Checks
 on: workflow_call
 
 jobs:
-  lint:
+  checks:
     name: Style & Types
     runs-on: ubuntu-latest
     steps:

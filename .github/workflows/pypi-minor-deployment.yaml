@@ -20,8 +20,7 @@ jobs:
     needs: ["checks"]
 
     env:
-      PYPI_USER: ${{ secrets.PYPI_USER }}
-      PYPI_PASSWORD: ${{ secrets.PYPI_PASSWORD }}
+      PYPI_TOKEN: ${{ secrets.PYPI_PASSWORD }}
 
     steps:
       - uses: actions/checkout@v3
@@ -38,7 +37,7 @@ jobs:
         run: poetry config virtualenvs.create false
 
       - name: Configure PyPi credentials
-        run: poetry config http-basic.pypi ${{ env.PYPI_USER }} ${{ env.PYPI_PASSWORD }}
+        run: poetry config pypi-token.pypi ${{ env.PYPI_TOKEN }}
 
       - name: Bump Version
         run: poetry version minor

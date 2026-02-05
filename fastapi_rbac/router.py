@@ -9,35 +9,30 @@ from fastapi import APIRouter, Depends
 
 from fastapi_rbac.context import ContextualAuthz
 from fastapi_rbac.dependencies import create_authz_dependency
-from fastapi_rbac.permissions import WILDCARD
+from fastapi_rbac.permissions import SEPARATOR, WILDCARD
 
-# Type alias for context classes
-ContextClass = type[ContextualAuthz[Any]]
-
-
-def _contains_wildcard(permission: str) -> bool:
-    """Check if a permission contains a wildcard."""
-    return WILDCARD in permission
+ContextClass = type[ContextualAuthz]  # alias
 
 
-def _validate_permissions(permissions: set[str] | None, location: str) -> None:
-    """Validate that permissions don't contain wildcards.
-
-    Args:
-        permissions: Set of permission strings to validate.
-        location: Description of where the permissions are defined (for error message).
-
-    Raises:
-        RuntimeError: If any permission contains a wildcard.
-    """
+def _validate_permissions(
+    permissions: set[str] | None,
+    location: str,
+) -> None:
+    """Various startup permissions validations"""
     if permissions is None:
         return
     for perm in permissions:
-        if _contains_wildcard(perm):
+        if WILDCARD in perm:
             raise RuntimeError(
                 f"Wildcard permissions are not allowed in {location}. "
                 f"Found '{perm}'. Wildcards should only be used in role grants."
             )
+        if SEPARATOR not in perm:
+            raise RuntimeError(
+                f"Each permission must decline at least one resource and one action. Found '{perm}' at {location}"
+            )
+        if perm.startswith(SEPARATOR) or perm.startswith(WILDCARD):
+            raise RuntimeError(f"Permission must explicitly define resource. Found '{perm}' at {location}")
 
 
 class RBACRouter(APIRouter):
@@ -73,31 +68,12 @@ class RBACRouter(APIRouter):
         contexts: list[ContextClass] | None = None,
         **kwargs: Any,
     ) -> None:
-        # Validate no wildcards in router-level permissions
         _validate_permissions(permissions, "router permissions")
 
         super().__init__(**kwargs)
         self.default_permissions: set[str] = permissions or set()
         self.default_contexts: list[ContextClass] = contexts or []
         self.endpoint_metadata: dict[tuple[str, str], dict[str, Any]] = {}
-
-    def _create_authz_dependency(
-        self,
-        permissions: set[str],
-        contexts: list[ContextClass],
-    ) -> Callable[..., Any]:
-        """Create an authorization dependency for an endpoint.
-
-        This dependency will be injected into the endpoint and will check
-        permissions before the endpoint handler is called.
-
-        Uses create_authz_dependency from dependencies.py which supports
-        resolving Depends() parameters in context classes.
-        """
-        return create_authz_dependency(
-            required_permissions=permissions,
-            context_classes=contexts,
-        )
 
     def _resolve_permissions_and_contexts(
         self,
@@ -117,13 +93,8 @@ class RBACRouter(APIRouter):
         Returns:
             Tuple of (final_permissions, final_contexts).
         """
-        # Validate no wildcards in endpoint-level permissions
         _validate_permissions(permissions, "endpoint permissions")
-
-        # Resolve final permissions: endpoint overrides router
         final_permissions = permissions if permissions is not None else self.default_permissions
-
-        # Resolve final contexts: endpoint merges with router
         final_contexts = list(self.default_contexts)
         if contexts:
             final_contexts.extend(contexts)
@@ -162,33 +133,16 @@ class RBACRouter(APIRouter):
         new_params = params + [authz_param]
         new_sig = sig.replace(parameters=new_params)
 
-        # Determine if endpoint is async
-        is_async = inspect.iscoroutinefunction(endpoint)
+        @wraps(endpoint)
+        async def wrapped_async(
+            *args: Any,
+            _rbac_authz_check_: Annotated[None, Depends(authz_dep)] = None,
+            **kwargs: Any,
+        ) -> Any:
+            return await endpoint(*args, **kwargs)
 
-        if is_async:
-
-            @wraps(endpoint)
-            async def wrapped_async(
-                *args: Any,
-                _rbac_authz_check_: Annotated[None, Depends(authz_dep)] = None,
-                **kwargs: Any,
-            ) -> Any:
-                return await endpoint(*args, **kwargs)
-
-            wrapped_async.__signature__ = new_sig  # type: ignore[attr-defined]
-            return wrapped_async
-        else:
-
-            @wraps(endpoint)
-            def wrapped_sync(
-                *args: Any,
-                _rbac_authz_check_: Annotated[None, Depends(authz_dep)] = None,
-                **kwargs: Any,
-            ) -> Any:
-                return endpoint(*args, **kwargs)
-
-            wrapped_sync.__signature__ = new_sig  # type: ignore[attr-defined]
-            return wrapped_sync
+        wrapped_async.__signature__ = new_sig  # type: ignore[attr-defined]
+        return wrapped_async
 
     def _add_route_with_authz(
         self,
@@ -218,7 +172,7 @@ class RBACRouter(APIRouter):
 
         # If there are permissions or contexts, wrap the endpoint
         if final_permissions or final_contexts:
-            authz_dep = self._create_authz_dependency(final_permissions, final_contexts)
+            authz_dep = create_authz_dependency(final_permissions, final_contexts)
             endpoint = self._wrap_endpoint_with_authz(endpoint, authz_dep)
 
         # Attach RBAC metadata to endpoint for later introspection

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -59,8 +59,7 @@ def create_ui_router(ui_path: str) -> APIRouter:
         include_in_schema=False,
     )
     async def get_schema(request: Request) -> JSONResponse:
-        """Return the RBAC schema as JSON."""
-        rbac: RBACAuthz[Any] = request.app.state.rbac
+        rbac: RBACAuthz = request.app.state.rbac
         schema = build_ui_schema(request.app, rbac)
         return JSONResponse(content=schema.model_dump())
 

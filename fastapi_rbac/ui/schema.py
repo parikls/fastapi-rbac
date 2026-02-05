@@ -147,8 +147,8 @@ def _build_endpoints_schema(app: FastAPI) -> tuple[list[EndpointSchema], dict[st
     context_classes: dict[str, type] = {}
     seen_endpoints: set[tuple[str, str]] = set()
 
-    # Get all registered RBAC routers from app state
-    rbac_routers: list[tuple[str, Any]] = getattr(app.state, "_rbac_routers_", [])
+    # Get all registered RBAC routers from RBACAuthz instance
+    rbac_routers: list[tuple[str, Any]] = getattr(app.state.rbac, "routers", [])
 
     # Build metadata map from all registered routers
     metadata_map: dict[tuple[str, str], dict[str, Any]] = {}
@@ -232,7 +232,7 @@ def _build_contexts_schema(
     ]
 
 
-def build_ui_schema(app: FastAPI, rbac: RBACAuthz[Any]) -> UISchema:
+def build_ui_schema(app: FastAPI, rbac: RBACAuthz) -> UISchema:
     """Build the complete UI schema for RBAC visualization.
 
     Args:

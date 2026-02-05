@@ -1,6 +1,6 @@
 """Tests for RBACRouter."""
 
-from typing import Annotated, Any
+from typing import Annotated
 
 import pytest
 from fastapi import APIRouter, Depends, FastAPI, Request
@@ -11,8 +11,6 @@ from fastapi_rbac import (
     ContextualAuthz,
     Global,
     RBACAuthz,
-    RBACUser,
-    create_auth_dependency,
 )
 from fastapi_rbac.router import RBACRouter
 
@@ -27,16 +25,28 @@ def get_admin_user() -> User:
     return User(id="admin-1", roles={"admin"})
 
 
+def get_admin_roles() -> set[str]:
+    return {"admin"}
+
+
 def get_instructor_user() -> User:
     return User(id="instructor-1", roles={"instructor"})
+
+
+def get_instructor_roles() -> set[str]:
+    return {"instructor"}
 
 
 def get_no_role_user() -> User:
     return User(id="norole-1", roles=set())
 
 
-class AlwaysPassesContext(ContextualAuthz[User]):
-    def __init__(self, user: Annotated[User, Depends(RBACUser)], request: Request) -> None:
+def get_no_roles() -> set[str]:
+    return set()
+
+
+class AlwaysPassesContext(ContextualAuthz):
+    def __init__(self, user: Annotated[User, Depends(get_admin_user)], request: Request) -> None:
         self.user = user
         self.request = request
 
@@ -44,8 +54,8 @@ class AlwaysPassesContext(ContextualAuthz[User]):
         return True
 
 
-class AlwaysFailsContext(ContextualAuthz[User]):
-    def __init__(self, user: Annotated[User, Depends(RBACUser)], request: Request) -> None:
+class AlwaysFailsContext(ContextualAuthz):
+    def __init__(self, user: Annotated[User, Depends(get_admin_user)], request: Request) -> None:
         self.user = user
         self.request = request
 
@@ -53,8 +63,8 @@ class AlwaysFailsContext(ContextualAuthz[User]):
         return False
 
 
-class InstructorOnlyContext(ContextualAuthz[User]):
-    def __init__(self, user: Annotated[User, Depends(RBACUser)], request: Request) -> None:
+class InstructorOnlyContext(ContextualAuthz):
+    def __init__(self, user: Annotated[User, Depends(get_instructor_user)], request: Request) -> None:
         self.user = user
         self.request = request
 
@@ -83,39 +93,37 @@ class TestRBACRouterPermissionChecks:
     def test_global_permission_grants_access(self) -> None:
         """User with global permission should access the endpoint."""
         app = FastAPI()
-        rbac: RBACAuthz[Any] = RBACAuthz(
+        RBACAuthz(
             app,
-            get_roles=lambda u: u.roles,
             permissions={
                 "admin": {Global("report:*")},
             },
+            roles_dependency=get_admin_roles,
         )
-        AuthUser = create_auth_dependency(rbac, user_dependency=get_admin_user)
 
         router = RBACRouter(permissions={"report:read"})
 
         @router.get("/reports")
-        async def get_reports(user: User = Depends(AuthUser)) -> dict[str, str]:
-            return {"user_id": user.id}
+        async def get_reports() -> dict[str, str]:
+            return {"status": "ok"}
 
         app.include_router(router)
 
         client = TestClient(app)
         response = client.get("/reports")
         assert response.status_code == 200
-        assert response.json() == {"user_id": "admin-1"}
+        assert response.json() == {"status": "ok"}
 
     def test_contextual_permission_with_passing_context(self) -> None:
         """User with contextual permission and passing context should access endpoint."""
         app = FastAPI()
-        rbac: RBACAuthz[Any] = RBACAuthz(
+        RBACAuthz(
             app,
-            get_roles=lambda u: u.roles,
             permissions={
                 "instructor": {Contextual("report:read")},
             },
+            roles_dependency=get_instructor_roles,
         )
-        AuthUser = create_auth_dependency(rbac, user_dependency=get_instructor_user)
 
         router = RBACRouter(
             permissions={"report:read"},
@@ -123,27 +131,26 @@ class TestRBACRouterPermissionChecks:
         )
 
         @router.get("/reports")
-        async def get_reports(user: User = Depends(AuthUser)) -> dict[str, str]:
-            return {"user_id": user.id}
+        async def get_reports() -> dict[str, str]:
+            return {"status": "ok"}
 
         app.include_router(router)
 
         client = TestClient(app)
         response = client.get("/reports")
         assert response.status_code == 200
-        assert response.json() == {"user_id": "instructor-1"}
+        assert response.json() == {"status": "ok"}
 
     def test_contextual_permission_with_failing_context(self) -> None:
         """User with contextual permission but failing context should get 403."""
         app = FastAPI()
-        rbac: RBACAuthz[Any] = RBACAuthz(
+        RBACAuthz(
             app,
-            get_roles=lambda u: u.roles,
             permissions={
                 "instructor": {Contextual("report:read")},
             },
+            roles_dependency=get_instructor_roles,
         )
-        AuthUser = create_auth_dependency(rbac, user_dependency=get_instructor_user)
 
         router = RBACRouter(
             permissions={"report:read"},
@@ -151,8 +158,8 @@ class TestRBACRouterPermissionChecks:
         )
 
         @router.get("/reports")
-        async def get_reports(user: User = Depends(AuthUser)) -> dict[str, str]:
-            return {"user_id": user.id}
+        async def get_reports() -> dict[str, str]:
+            return {"status": "ok"}
 
         app.include_router(router)
 
@@ -163,21 +170,19 @@ class TestRBACRouterPermissionChecks:
     def test_no_permission_raises_forbidden(self) -> None:
         """User without required permission should get 403."""
         app = FastAPI()
-        rbac: RBACAuthz[Any] = RBACAuthz(
+        RBACAuthz(
             app,
-            get_roles=lambda u: u.roles,
             permissions={
                 "admin": {Global("report:*")},
             },
+            roles_dependency=get_no_roles,
         )
-        # User has no roles, so no permissions
-        AuthUser = create_auth_dependency(rbac, user_dependency=get_no_role_user)
 
         router = RBACRouter(permissions={"report:read"})
 
         @router.get("/reports")
-        async def get_reports(user: User = Depends(AuthUser)) -> dict[str, str]:
-            return {"user_id": user.id}
+        async def get_reports() -> dict[str, str]:
+            return {"status": "ok"}
 
         app.include_router(router)
 
@@ -190,24 +195,22 @@ class TestEndpointOverrides:
     def test_endpoint_permissions_override_router_permissions(self) -> None:
         """Endpoint-level permissions should completely replace router permissions."""
         app = FastAPI()
-        rbac: RBACAuthz[Any] = RBACAuthz(
+        RBACAuthz(
             app,
-            get_roles=lambda u: u.roles,
             permissions={
                 "admin": {Global("admin:*")},  # Admin can do admin stuff
                 "instructor": {Contextual("report:read")},  # Instructor can read reports
             },
+            roles_dependency=get_admin_roles,
         )
-        # Use admin user who has admin:* but NOT report:read
-        AuthUser = create_auth_dependency(rbac, user_dependency=get_admin_user)
 
         # Router requires admin:* permissions
         router = RBACRouter(permissions={"admin:access"})
 
         # This endpoint OVERRIDES to require report:read instead
         @router.get("/reports", permissions={"report:read"})
-        async def get_reports(user: User = Depends(AuthUser)) -> dict[str, str]:
-            return {"user_id": user.id}
+        async def get_reports() -> dict[str, str]:
+            return {"status": "ok"}
 
         app.include_router(router)
 
@@ -220,14 +223,13 @@ class TestEndpointOverrides:
     def test_endpoint_contexts_merge_with_router_contexts(self) -> None:
         """Endpoint-level contexts should merge with (add to) router contexts."""
         app = FastAPI()
-        rbac: RBACAuthz[Any] = RBACAuthz(
+        RBACAuthz(
             app,
-            get_roles=lambda u: u.roles,
             permissions={
                 "instructor": {Contextual("report:read")},
             },
+            roles_dependency=get_instructor_roles,
         )
-        AuthUser = create_auth_dependency(rbac, user_dependency=get_instructor_user)
 
         # Router has InstructorOnlyContext
         router = RBACRouter(
@@ -237,8 +239,8 @@ class TestEndpointOverrides:
 
         # Endpoint adds AlwaysFailsContext - should merge, not replace
         @router.get("/reports", contexts=[AlwaysFailsContext])
-        async def get_reports(user: User = Depends(AuthUser)) -> dict[str, str]:
-            return {"user_id": user.id}
+        async def get_reports() -> dict[str, str]:
+            return {"status": "ok"}
 
         app.include_router(router)
 
@@ -252,24 +254,14 @@ class TestEndpointOverrides:
 class TestWildcardValidation:
     def test_wildcard_in_endpoint_permission_raises_error(self) -> None:
         """Wildcard permissions in endpoint decorators should raise RuntimeError."""
-        app = FastAPI()
-        rbac: RBACAuthz[Any] = RBACAuthz(
-            app,
-            get_roles=lambda u: u.roles,
-            permissions={
-                "admin": {Global("*")},
-            },
-        )
-        AuthUser = create_auth_dependency(rbac, user_dependency=get_admin_user)
-
         router = RBACRouter()
 
         # The error is raised when the decorator is applied
         with pytest.raises(RuntimeError, match="[Ww]ildcard"):
 
             @router.get("/reports", permissions={"report:*"})
-            async def get_reports(user: User = Depends(AuthUser)) -> dict[str, str]:
-                return {"user_id": user.id}
+            async def get_reports() -> dict[str, str]:
+                return {"status": "ok"}
 
     def test_wildcard_in_router_permission_raises_error(self) -> None:
         """Wildcard permissions in router constructor should raise RuntimeError."""
@@ -278,23 +270,13 @@ class TestWildcardValidation:
 
     def test_global_wildcard_in_endpoint_permission_raises_error(self) -> None:
         """Global wildcard '*' in endpoint permissions should raise RuntimeError."""
-        app = FastAPI()
-        rbac: RBACAuthz[Any] = RBACAuthz(
-            app,
-            get_roles=lambda u: u.roles,
-            permissions={
-                "admin": {Global("*")},
-            },
-        )
-        AuthUser = create_auth_dependency(rbac, user_dependency=get_admin_user)
-
         router = RBACRouter()
 
         with pytest.raises(RuntimeError, match="[Ww]ildcard"):
 
             @router.get("/reports", permissions={"*"})
-            async def get_reports(user: User = Depends(AuthUser)) -> dict[str, str]:
-                return {"user_id": user.id}
+            async def get_reports() -> dict[str, str]:
+                return {"status": "ok"}
 
 
 class TestHTTPMethods:
@@ -303,20 +285,19 @@ class TestHTTPMethods:
     def test_post_method(self) -> None:
         """POST method should work with permissions."""
         app = FastAPI()
-        rbac: RBACAuthz[Any] = RBACAuthz(
+        RBACAuthz(
             app,
-            get_roles=lambda u: u.roles,
             permissions={
                 "admin": {Global("report:create")},
             },
+            roles_dependency=get_admin_roles,
         )
-        AuthUser = create_auth_dependency(rbac, user_dependency=get_admin_user)
 
         router = RBACRouter(permissions={"report:create"})
 
         @router.post("/reports")
-        async def create_report(user: User = Depends(AuthUser)) -> dict[str, str]:
-            return {"user_id": user.id}
+        async def create_report() -> dict[str, str]:
+            return {"status": "ok"}
 
         app.include_router(router)
 
@@ -327,20 +308,19 @@ class TestHTTPMethods:
     def test_put_method(self) -> None:
         """PUT method should work with permissions."""
         app = FastAPI()
-        rbac: RBACAuthz[Any] = RBACAuthz(
+        RBACAuthz(
             app,
-            get_roles=lambda u: u.roles,
             permissions={
                 "admin": {Global("report:update")},
             },
+            roles_dependency=get_admin_roles,
         )
-        AuthUser = create_auth_dependency(rbac, user_dependency=get_admin_user)
 
         router = RBACRouter(permissions={"report:update"})
 
         @router.put("/reports/{id}")
-        async def update_report(id: str, user: User = Depends(AuthUser)) -> dict[str, str]:
-            return {"user_id": user.id, "report_id": id}
+        async def update_report(id: str) -> dict[str, str]:
+            return {"report_id": id}
 
         app.include_router(router)
 
@@ -351,20 +331,19 @@ class TestHTTPMethods:
     def test_patch_method(self) -> None:
         """PATCH method should work with permissions."""
         app = FastAPI()
-        rbac: RBACAuthz[Any] = RBACAuthz(
+        RBACAuthz(
             app,
-            get_roles=lambda u: u.roles,
             permissions={
                 "admin": {Global("report:update")},
             },
+            roles_dependency=get_admin_roles,
         )
-        AuthUser = create_auth_dependency(rbac, user_dependency=get_admin_user)
 
         router = RBACRouter(permissions={"report:update"})
 
         @router.patch("/reports/{id}")
-        async def patch_report(id: str, user: User = Depends(AuthUser)) -> dict[str, str]:
-            return {"user_id": user.id, "report_id": id}
+        async def patch_report(id: str) -> dict[str, str]:
+            return {"report_id": id}
 
         app.include_router(router)
 
@@ -375,20 +354,19 @@ class TestHTTPMethods:
     def test_delete_method(self) -> None:
         """DELETE method should work with permissions."""
         app = FastAPI()
-        rbac: RBACAuthz[Any] = RBACAuthz(
+        RBACAuthz(
             app,
-            get_roles=lambda u: u.roles,
             permissions={
                 "admin": {Global("report:delete")},
             },
+            roles_dependency=get_admin_roles,
         )
-        AuthUser = create_auth_dependency(rbac, user_dependency=get_admin_user)
 
         router = RBACRouter(permissions={"report:delete"})
 
         @router.delete("/reports/{id}")
-        async def delete_report(id: str, user: User = Depends(AuthUser)) -> dict[str, str]:
-            return {"user_id": user.id, "report_id": id}
+        async def delete_report(id: str) -> dict[str, str]:
+            return {"report_id": id}
 
         app.include_router(router)
 
@@ -430,23 +408,26 @@ class TestMetadataStorage:
         assert post_meta["contexts"] == [InstructorOnlyContext]  # Still has router context
 
 
-class TestNoUserInRequest:
-    """Test behavior when user is not set in request state."""
+class TestNoRoles:
+    """Test behavior when user has no roles."""
 
-    def test_missing_user_raises_forbidden(self) -> None:
-        """If user is not in request.state, should raise Forbidden."""
+    def test_empty_roles_raises_forbidden(self) -> None:
+        """If roles dependency returns empty set, should raise Forbidden."""
         app = FastAPI()
-        RBACAuthz[Any](
+
+        def get_empty_roles() -> set[str]:
+            return set()
+
+        RBACAuthz(
             app,
-            get_roles=lambda u: u.roles,
             permissions={
                 "admin": {Global("report:*")},
             },
+            roles_dependency=get_empty_roles,
         )
 
         router = RBACRouter(permissions={"report:read"})
 
-        # Don't use auth dependency, so user won't be in request.state
         @router.get("/reports")
         async def get_reports() -> dict[str, str]:
             return {}

@@ -10,7 +10,7 @@ class User:
         self.roles = roles
 
 
-class SimpleRoleContext(ContextualAuthz[User]):
+class SimpleRoleContext(ContextualAuthz):
     """Check if user has 'admin' role."""
 
     def __init__(self, user: User, request: Request) -> None:
@@ -22,9 +22,9 @@ class SimpleRoleContext(ContextualAuthz[User]):
 
 
 class TestContextualAuthz:
-    def test_context_is_generic_over_user_type(self) -> None:
-        # Type checking test - should not raise
-        context: ContextualAuthz[User] = SimpleRoleContext(
+    def test_context_stores_user(self) -> None:
+        # Test that context can store user via __init__
+        context = SimpleRoleContext(
             user=User(id="1", roles={"admin"}),
             request=None,  # type: ignore[arg-type]
         )

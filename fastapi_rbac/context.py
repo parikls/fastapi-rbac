@@ -1,33 +1,28 @@
 from abc import ABC, abstractmethod
-from typing import Generic, TypeVar
-
-UserT = TypeVar("UserT")
 
 
-class ContextualAuthz(ABC, Generic[UserT]):
+class ContextualAuthz(ABC):
     """Base class for contextual authorization checks.
 
-    Subclasses are FastAPI dependencies - use standard Depends() for
-    additional dependencies like database sessions.
+    Subclasses can use FastAPI dependencies in the __init__ method.
 
     Example:
-        class MyContext(ContextualAuthz[User]):
-            def __init__(
-                self,
-                user: User,
-                request: Request,
-                db: AsyncSession = Depends(get_db),
-            ):
-                self.user = user
-                self.request = request
-                self.db = db
 
-            async def has_permissions(self) -> bool:
-                # Check access using self.user, self.request, self.db
-                return True
+    >>> class MyContext(ContextualAuthz):
+    >>>     def __init__(
+    >>>         self,
+    >>>         user: Annotated[User, Depends(get_current_user)],  # your auth dep
+    >>>         request: Request,  # fastapi dep
+    >>>         db: AsyncSession = Depends(get_db),  # your database dep
+    >>>     ):
+    >>>         self.user = user
+    >>>         self.request = request
+    >>>         self.db = db
+    >>>
+    >>>     async def has_permissions(self) -> bool:
+    >>>         # Check access using self.user, self.request, self.db
+    >>>         return True
     """
-
-    user: UserT
 
     @abstractmethod
     async def has_permissions(self) -> bool:
@@ -36,4 +31,4 @@ class ContextualAuthz(ABC, Generic[UserT]):
         Returns:
             True if access should be granted, False otherwise.
         """
-        ...
+        raise NotImplementedError()

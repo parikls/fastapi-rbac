@@ -9,7 +9,7 @@ validating that all components work together correctly:
 - UI accessibility and schema generation
 """
 
-from typing import Annotated, Any
+from typing import Annotated
 
 import pytest
 from fastapi import Depends, FastAPI, Request
@@ -22,8 +22,6 @@ from fastapi_rbac import (
     PermissionScope,
     RBACAuthz,
     RBACRouter,
-    RBACUser,
-    create_auth_dependency,
 )
 
 # =============================================================================
@@ -50,20 +48,27 @@ def get_current_user() -> User:
     return _current_user
 
 
+def get_current_user_roles() -> set[str]:
+    """Get the roles for the current test user."""
+    if _current_user is None:
+        raise ValueError("Test user not set")
+    return _current_user.roles
+
+
 def set_test_user(user: User) -> None:
     """Set the current test user for dependency injection."""
     global _current_user
     _current_user = user
 
 
-class OrganizationMemberContext(ContextualAuthz[User]):
+class OrganizationMemberContext(ContextualAuthz):
     """Context check for organization membership.
 
     In a real application, this would check if the user is a member
     of the organization specified in the request path.
     """
 
-    def __init__(self, user: Annotated[User, Depends(RBACUser)], request: Request) -> None:
+    def __init__(self, user: Annotated[User, Depends(get_current_user)], request: Request) -> None:
         self.user = user
         self.request = request
 
@@ -72,14 +77,14 @@ class OrganizationMemberContext(ContextualAuthz[User]):
         return "org_member" in self.user.roles
 
 
-class StudentAccessContext(ContextualAuthz[User]):
+class StudentAccessContext(ContextualAuthz):
     """Context check for student access.
 
     In a real application, this would verify the user has access
     to the specific student referenced in the request.
     """
 
-    def __init__(self, user: Annotated[User, Depends(RBACUser)], request: Request) -> None:
+    def __init__(self, user: Annotated[User, Depends(get_current_user)], request: Request) -> None:
         self.user = user
         self.request = request
 
@@ -88,10 +93,10 @@ class StudentAccessContext(ContextualAuthz[User]):
         return "instructor" in self.user.roles
 
 
-class AlwaysFailsContext(ContextualAuthz[User]):
+class AlwaysFailsContext(ContextualAuthz):
     """Context that always fails - for testing bypass scenarios."""
 
-    def __init__(self, user: Annotated[User, Depends(RBACUser)], request: Request) -> None:
+    def __init__(self, user: Annotated[User, Depends(get_current_user)], request: Request) -> None:
         self.user = user
         self.request = request
 
@@ -109,9 +114,8 @@ def create_integration_app() -> FastAPI:
     app = FastAPI(title="RBAC Integration Test")
 
     # Configure RBAC with all role types
-    rbac: RBACAuthz[Any] = RBACAuthz(
+    RBACAuthz(
         app,
-        get_roles=lambda u: u.roles,
         permissions={
             # Superuser: Global("*") - bypasses ALL checks
             "superuser": {Global("*")},
@@ -125,11 +129,9 @@ def create_integration_app() -> FastAPI:
             # Viewer: Limited contextual permissions
             "viewer": {Contextual("report:read")},
         },
+        roles_dependency=get_current_user_roles,
         ui_path="/_rbac",
     )
-
-    # Create auth dependency
-    AuthUser = create_auth_dependency(rbac, user_dependency=get_current_user)
 
     # Reports router with permissions and contexts
     reports_router = RBACRouter(
@@ -138,16 +140,19 @@ def create_integration_app() -> FastAPI:
     )
 
     @reports_router.get("/reports")
-    async def list_reports(user: Annotated[User, Depends(AuthUser)]) -> dict[str, str]:
-        return {"status": "success", "user_id": user.id}
+    async def list_reports() -> dict[str, str]:
+        user = _current_user
+        return {"status": "success", "user_id": user.id if user else "none"}
 
     @reports_router.get("/reports/{report_id}")
-    async def get_report(report_id: str, user: Annotated[User, Depends(AuthUser)]) -> dict[str, str]:
-        return {"status": "success", "report_id": report_id, "user_id": user.id}
+    async def get_report(report_id: str) -> dict[str, str]:
+        user = _current_user
+        return {"status": "success", "report_id": report_id, "user_id": user.id if user else "none"}
 
     @reports_router.post("/reports", permissions={"report:create"})
-    async def create_report(user: Annotated[User, Depends(AuthUser)]) -> dict[str, str]:
-        return {"status": "created", "user_id": user.id}
+    async def create_report() -> dict[str, str]:
+        user = _current_user
+        return {"status": "created", "user_id": user.id if user else "none"}
 
     # Students router with multiple contexts
     students_router = RBACRouter(
@@ -156,8 +161,9 @@ def create_integration_app() -> FastAPI:
     )
 
     @students_router.get("/students/{student_id}")
-    async def get_student(student_id: str, user: Annotated[User, Depends(AuthUser)]) -> dict[str, str]:
-        return {"status": "success", "student_id": student_id, "user_id": user.id}
+    async def get_student(student_id: str) -> dict[str, str]:
+        user = _current_user
+        return {"status": "success", "student_id": student_id, "user_id": user.id if user else "none"}
 
     # Strict router - always fails context (for testing global bypass)
     strict_router = RBACRouter(
@@ -166,8 +172,9 @@ def create_integration_app() -> FastAPI:
     )
 
     @strict_router.get("/strict-reports")
-    async def get_strict_reports(user: Annotated[User, Depends(AuthUser)]) -> dict[str, str]:
-        return {"status": "success", "user_id": user.id}
+    async def get_strict_reports() -> dict[str, str]:
+        user = _current_user
+        return {"status": "success", "user_id": user.id if user else "none"}
 
     # Include all routers
     app.include_router(reports_router, prefix="/api/v1")
@@ -534,13 +541,6 @@ class TestLibraryExports:
         from fastapi_rbac import ContextualAuthz
 
         assert ContextualAuthz is not None
-
-    def test_create_auth_dependency_exported(self) -> None:
-        """create_auth_dependency is exported."""
-        from fastapi_rbac import create_auth_dependency
-
-        assert create_auth_dependency is not None
-        assert callable(create_auth_dependency)
 
     def test_create_authz_dependency_exported(self) -> None:
         """create_authz_dependency is exported."""

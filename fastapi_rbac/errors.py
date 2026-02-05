@@ -1,8 +1,7 @@
 from fastapi import HTTPException
+from starlette.status import HTTP_403_FORBIDDEN
 
 
 class Forbidden(HTTPException):
-    """403 Forbidden - user lacks required permissions."""
-
     def __init__(self, detail: str = "Forbidden") -> None:
-        super().__init__(status_code=403, detail=detail)
+        super().__init__(status_code=HTTP_403_FORBIDDEN, detail=detail)

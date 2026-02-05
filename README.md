@@ -14,7 +14,7 @@ pip install fastapi-rbac-authz
 from typing import Annotated
 from fastapi import Depends, FastAPI
 from fastapi_rbac import (
-    RBACAuthz, RBACRouter, Global, Contextual, ContextualAuthz, RBACUser
+    RBACAuthz, RBACRouter, Global, Contextual, ContextualAuthz
 )
 
 # 1. Define your user model
@@ -23,7 +23,17 @@ class User:
         self.user_id = user_id
         self.roles = roles
 
-# 2. Define role permissions
+# 2. Define your authentication dependencies
+# The library only needs roles - you can authenticate however you like
+async def get_current_user() -> User:
+    # Your authentication logic here
+    return User(user_id="user-1", roles={"viewer"})
+
+async def get_current_user_roles() -> set[str]:
+    user = await get_current_user()
+    return user.roles
+
+# 3. Define role permissions
 PERMISSIONS = {
     "admin": {
         Global("report:*"),         # Admin can do anything with reports
@@ -33,13 +43,13 @@ PERMISSIONS = {
     },
 }
 
-# 3. Create a context check (for contextual permissions)
-# All __init__ params are injected by FastAPI's DI system
-class ReportAccessContext(ContextualAuthz[User]):
+# 4. Create a context check (for contextual permissions)
+# Context classes are responsible for their own authentication via FastAPI DI
+class ReportAccessContext(ContextualAuthz):
     def __init__(
         self,
         report_id: int,  # <-- Injected from path parameter
-        user: Annotated[User, Depends(RBACUser)],
+        user: Annotated[User, Depends(get_current_user)],  # Your auth dependency
     ):
         self.user = user
         self.report_id = report_id
@@ -49,22 +59,17 @@ class ReportAccessContext(ContextualAuthz[User]):
         allowed_reports = {1, 2, 3}  # e.g., query from database
         return self.report_id in allowed_reports
 
-# 4. Create your app and configure RBAC
+# 5. Create your app and configure RBAC
 app = FastAPI()
-
-async def get_current_user() -> User:
-    # Your authentication logic here
-    return User(user_id="user-1", roles={"viewer"})
 
 RBACAuthz(
     app,
-    get_roles=lambda u: u.roles,
     permissions=PERMISSIONS,
-    user_dependency=get_current_user,
+    roles_dependency=get_current_user_roles,  # Returns set[str]
     ui_path="/_rbac",  # Optional: mount visualization UI
 )
 
-# 5. Create protected routes
+# 6. Create protected routes
 router = RBACRouter(permissions={"report:read"}, contexts=[ReportAccessContext])
 
 @router.get("/reports/{report_id}")
@@ -77,6 +82,8 @@ async def create_report():
 
 app.include_router(router, prefix="/api")
 ```
+
+> **Note:** The library doesn't care how you authenticate - whether via dependency, middleware, JWT decode, or any other method. You just need to provide a dependency that returns the user's roles as `set[str]`. Context classes are responsible for their own authentication and can use any FastAPI dependency pattern.
 
 ## Permission Scopes
 
@@ -114,14 +121,14 @@ PERMISSIONS = {
 
 ## Context Checks
 
-Context checks are classes that implement fine-grained authorization logic. They're regular FastAPI dependencies, so you can inject any parameters (path params, query params, request body, database sessions, etc.).
+Context checks are classes that implement fine-grained authorization logic. They're regular FastAPI dependencies, so you can inject any parameters (path params, query params, request body, database sessions, etc.). Each context class is responsible for its own authentication via FastAPI's dependency injection.
 
 ```python
-class ReportAccessContext(ContextualAuthz[User]):
+class ReportAccessContext(ContextualAuthz):
     def __init__(
         self,
         report_id: int,  # Injected from path parameter
-        user: Annotated[User, Depends(RBACUser)],
+        user: Annotated[User, Depends(get_current_user)],  # Your auth dependency
         db: Annotated[AsyncSession, Depends(get_db)],  # Database session
     ):
         self.user = user
@@ -139,8 +146,8 @@ class ReportAccessContext(ContextualAuthz[User]):
 When a request hits an RBAC-protected endpoint:
 
 ```
-1. Authentication
-   └── user_dependency runs → User object available
+1. Role Resolution
+   └── roles_dependency runs → User's roles (set[str]) available
 
 2. Permission Check
    └── Does user have ANY grant (global or contextual) for required permission?
@@ -153,7 +160,7 @@ When a request hits an RBAC-protected endpoint:
        └── No  → Continue to context checks
 
 4. Context Checks (only for Contextual grants)
-   └── Run all context classes via FastAPI DI
+   └── Run all context classes via FastAPI DI (each gets its own user via Depends)
        └── Do ALL contexts return True?
            ├── No  → 403 Forbidden
            └── Yes → Access granted

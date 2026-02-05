@@ -1,19 +1,22 @@
-from typing import Any
-
 from fastapi import FastAPI
 
 from fastapi_rbac import Contextual, Global, PermissionGrant, RBACAuthz
 
 
+def get_test_roles() -> set[str]:
+    """Dummy roles dependency for tests."""
+    return set()
+
+
 class TestRBACAuthzSetup:
     def test_rbac_attaches_to_app(self) -> None:
         app = FastAPI()
-        rbac: RBACAuthz[Any] = RBACAuthz(
+        rbac = RBACAuthz(
             app,
-            get_roles=lambda user: user.roles,
             permissions={
                 "admin": {Global("*")},
             },
+            roles_dependency=get_test_roles,
         )
         assert app.state.rbac is rbac
 
@@ -23,52 +26,41 @@ class TestRBACAuthzSetup:
             "admin": {Global("report:*")},
             "user": {Contextual("report:read")},
         }
-        rbac: RBACAuthz[Any] = RBACAuthz(
+        rbac = RBACAuthz(
             app,
-            get_roles=lambda user: user.roles,
             permissions=permissions,
+            roles_dependency=get_test_roles,
         )
         assert rbac.permissions == permissions
 
-    def test_rbac_stores_get_roles_callable(self) -> None:
+    def test_rbac_stores_roles_dependency(self) -> None:
         app = FastAPI()
 
-        def get_roles(user: Any) -> set[str]:
-            return set(user.roles)
+        def custom_roles_dep() -> set[str]:
+            return {"admin"}
 
-        rbac: RBACAuthz[Any] = RBACAuthz(
+        rbac = RBACAuthz(
             app,
-            get_roles=get_roles,
             permissions={},
+            roles_dependency=custom_roles_dep,
         )
-        assert rbac.get_roles is get_roles
+        assert rbac.roles_dependency is custom_roles_dep
 
     def test_rbac_ui_path_default_none(self) -> None:
         app = FastAPI()
-        rbac: RBACAuthz[Any] = RBACAuthz(
+        rbac = RBACAuthz(
             app,
-            get_roles=lambda user: user.roles,
             permissions={},
+            roles_dependency=get_test_roles,
         )
         assert rbac.ui_path is None
 
     def test_rbac_ui_path_can_be_set(self) -> None:
         app = FastAPI()
-        rbac: RBACAuthz[Any] = RBACAuthz(
+        rbac = RBACAuthz(
             app,
-            get_roles=lambda user: user.roles,
             permissions={},
+            roles_dependency=get_test_roles,
             ui_path="/_rbac",
         )
         assert rbac.ui_path == "/_rbac"
-
-    def test_rbac_ui_permissions_can_be_set(self) -> None:
-        app = FastAPI()
-        rbac: RBACAuthz[Any] = RBACAuthz(
-            app,
-            get_roles=lambda user: user.roles,
-            permissions={},
-            ui_path="/_rbac",
-            ui_permissions={"admin:rbac:view"},
-        )
-        assert rbac.ui_permissions == {"admin:rbac:view"}

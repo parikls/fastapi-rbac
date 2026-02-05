@@ -20,7 +20,6 @@ from fastapi_rbac import (
     Global,
     RBACAuthz,
     RBACRouter,
-    RBACUser,
 )
 
 
@@ -67,8 +66,10 @@ PERMISSIONS = {
 
 
 # =============================================================================
-# Authentication Dependency
+# Authentication Dependencies
 # =============================================================================
+
+
 async def get_current_user(x_token: Annotated[str, Header()]) -> User:
     """Simulate authentication via X-Token header."""
     user = USERS.get(x_token)
@@ -77,16 +78,29 @@ async def get_current_user(x_token: Annotated[str, Header()]) -> User:
     return user
 
 
+async def get_current_user_roles(user: User = Depends(get_current_user)) -> set[str]:
+    """Get the roles for the current user.
+
+    This dependency returns only the roles - the library doesn't need
+    the full user object for authorization checks.
+    """
+    return user.roles
+
+
 # =============================================================================
 # Context Check
 # =============================================================================
-class ReportOwnerContext(ContextualAuthz[User]):
-    """Check if user owns the report or is allowed to access it."""
+class ReportOwnerContext(ContextualAuthz):
+    """Check if user owns the report or is allowed to access it.
+
+    Context classes are responsible for their own authentication.
+    They use FastAPI's Depends() to get the user via your auth dependency.
+    """
 
     def __init__(
         self,
         report_id: int,
-        user: Annotated[User, Depends(RBACUser)],
+        user: Annotated[User, Depends(get_current_user)],
     ):
         self.user = user
         self.report_id = report_id
@@ -109,9 +123,8 @@ app = FastAPI(
 
 RBACAuthz(
     app,
-    get_roles=lambda user: user.roles,
     permissions=PERMISSIONS,
-    user_dependency=get_current_user,
+    roles_dependency=get_current_user_roles,
     ui_path="/_rbac",
 )
 
@@ -147,7 +160,7 @@ async def update_report(report_id: int, title: str):
 
 
 @router.post("", permissions={"report:create"}, contexts=[])
-async def create_report(title: str, user: Annotated[User, Depends(RBACUser)]):
+async def create_report(title: str, user: Annotated[User, Depends(get_current_user)]):
     """Create a new report. Requires report:create permission (no context check)."""
     new_id = max(REPORTS.keys()) + 1
     REPORTS[new_id] = {"title": title, "owner_id": user.user_id}

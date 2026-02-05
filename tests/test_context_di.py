@@ -1,6 +1,6 @@
 """Tests for Context Dependency Injection."""
 
-from typing import Annotated, Any
+from typing import Annotated
 
 import pytest
 from fastapi import Depends, FastAPI, Request
@@ -10,8 +10,6 @@ from fastapi_rbac import (
     Contextual,
     ContextualAuthz,
     RBACAuthz,
-    RBACUser,
-    create_auth_dependency,
 )
 from fastapi_rbac.router import RBACRouter
 
@@ -24,6 +22,10 @@ class User:
 
 def get_instructor_user() -> User:
     return User(id="instructor-1", roles={"instructor"})
+
+
+def get_instructor_roles() -> set[str]:
+    return {"instructor"}
 
 
 # Fake database for testing dependency injection
@@ -48,12 +50,12 @@ def get_db() -> FakeDB:
     return _test_db
 
 
-class DBContextAuthz(ContextualAuthz[User]):
+class DBContextAuthz(ContextualAuthz):
     """Context that uses a database dependency to check permissions."""
 
     def __init__(
         self,
-        user: Annotated[User, Depends(RBACUser)],
+        user: Annotated[User, Depends(get_instructor_user)],
         request: Request,
         db: FakeDB = Depends(get_db),
     ) -> None:
@@ -76,14 +78,13 @@ class TestContextReceivesInjectedDependencies:
 
         try:
             app = FastAPI()
-            rbac: RBACAuthz[Any] = RBACAuthz(
+            RBACAuthz(
                 app,
-                get_roles=lambda u: u.roles,
                 permissions={
                     "instructor": {Contextual("report:read")},
                 },
+                roles_dependency=get_instructor_roles,
             )
-            AuthUser = create_auth_dependency(rbac, user_dependency=get_instructor_user)
 
             router = RBACRouter(
                 permissions={"report:read"},
@@ -91,15 +92,15 @@ class TestContextReceivesInjectedDependencies:
             )
 
             @router.get("/reports")
-            async def get_reports(user: User = Depends(AuthUser)) -> dict[str, str]:
-                return {"user_id": user.id}
+            async def get_reports() -> dict[str, str]:
+                return {"status": "ok"}
 
             app.include_router(router)
 
             client = TestClient(app)
             response = client.get("/reports")
             assert response.status_code == 200
-            assert response.json() == {"user_id": "instructor-1"}
+            assert response.json() == {"status": "ok"}
         finally:
             _test_db = None
 
@@ -111,14 +112,13 @@ class TestContextReceivesInjectedDependencies:
 
         try:
             app = FastAPI()
-            rbac: RBACAuthz[Any] = RBACAuthz(
+            RBACAuthz(
                 app,
-                get_roles=lambda u: u.roles,
                 permissions={
                     "instructor": {Contextual("report:read")},
                 },
+                roles_dependency=get_instructor_roles,
             )
-            AuthUser = create_auth_dependency(rbac, user_dependency=get_instructor_user)
 
             router = RBACRouter(
                 permissions={"report:read"},
@@ -126,8 +126,8 @@ class TestContextReceivesInjectedDependencies:
             )
 
             @router.get("/reports")
-            async def get_reports(user: User = Depends(AuthUser)) -> dict[str, str]:
-                return {"user_id": user.id}
+            async def get_reports() -> dict[str, str]:
+                return {"status": "ok"}
 
             app.include_router(router)
 
@@ -150,12 +150,12 @@ class TestContextDIWithMultipleDependencies:
         def get_org_id() -> str:
             return "org-123"
 
-        class MultiDepContext(ContextualAuthz[User]):
+        class MultiDepContext(ContextualAuthz):
             """Context with multiple dependencies."""
 
             def __init__(
                 self,
-                user: Annotated[User, Depends(RBACUser)],
+                user: Annotated[User, Depends(get_instructor_user)],
                 request: Request,
                 db: FakeDB = Depends(get_db),
                 org_id: str = Depends(get_org_id),
@@ -171,14 +171,13 @@ class TestContextDIWithMultipleDependencies:
 
         try:
             app = FastAPI()
-            rbac: RBACAuthz[Any] = RBACAuthz(
+            RBACAuthz(
                 app,
-                get_roles=lambda u: u.roles,
                 permissions={
                     "instructor": {Contextual("report:read")},
                 },
+                roles_dependency=get_instructor_roles,
             )
-            AuthUser = create_auth_dependency(rbac, user_dependency=get_instructor_user)
 
             router = RBACRouter(
                 permissions={"report:read"},
@@ -186,8 +185,8 @@ class TestContextDIWithMultipleDependencies:
             )
 
             @router.get("/reports")
-            async def get_reports(user: User = Depends(AuthUser)) -> dict[str, str]:
-                return {"user_id": user.id}
+            async def get_reports() -> dict[str, str]:
+                return {"status": "ok"}
 
             app.include_router(router)
 
@@ -212,12 +211,12 @@ class TestContextDIWithAsyncDependencies:
                 raise RuntimeError("Test DB not configured")
             return _test_db
 
-        class AsyncDBContext(ContextualAuthz[User]):
+        class AsyncDBContext(ContextualAuthz):
             """Context with async dependency."""
 
             def __init__(
                 self,
-                user: Annotated[User, Depends(RBACUser)],
+                user: Annotated[User, Depends(get_instructor_user)],
                 request: Request,
                 db: FakeDB = Depends(get_async_db),
             ) -> None:
@@ -230,14 +229,13 @@ class TestContextDIWithAsyncDependencies:
 
         try:
             app = FastAPI()
-            rbac: RBACAuthz[Any] = RBACAuthz(
+            RBACAuthz(
                 app,
-                get_roles=lambda u: u.roles,
                 permissions={
                     "instructor": {Contextual("report:read")},
                 },
+                roles_dependency=get_instructor_roles,
             )
-            AuthUser = create_auth_dependency(rbac, user_dependency=get_instructor_user)
 
             router = RBACRouter(
                 permissions={"report:read"},
@@ -245,8 +243,8 @@ class TestContextDIWithAsyncDependencies:
             )
 
             @router.get("/reports")
-            async def get_reports(user: User = Depends(AuthUser)) -> dict[str, str]:
-                return {"user_id": user.id}
+            async def get_reports() -> dict[str, str]:
+                return {"status": "ok"}
 
             app.include_router(router)
 
@@ -270,12 +268,12 @@ class TestContextDIDirectEvaluatePermissions:
 
         try:
             app = FastAPI()
-            RBACAuthz[Any](
+            RBACAuthz(
                 app,
-                get_roles=lambda u: u.roles,
                 permissions={
                     "user": {Contextual("resource:read")},
                 },
+                roles_dependency=get_instructor_roles,
             )
 
             authz_dep = create_authz_dependency(

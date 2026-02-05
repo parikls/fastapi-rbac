@@ -1,6 +1,6 @@
 """Tests for RBAC UI visualization."""
 
-from typing import Annotated, Any
+from typing import Annotated
 
 import pytest
 from fastapi import Depends, FastAPI, Request
@@ -12,8 +12,6 @@ from fastapi_rbac import (
     Global,
     RBACAuthz,
     RBACRouter,
-    RBACUser,
-    create_auth_dependency,
 )
 
 
@@ -27,10 +25,14 @@ def get_admin_user() -> User:
     return User(id="admin-1", roles={"admin"})
 
 
-class OrganizationContext(ContextualAuthz[User]):
+def get_admin_roles() -> set[str]:
+    return {"admin"}
+
+
+class OrganizationContext(ContextualAuthz):
     """Context for organization membership checks."""
 
-    def __init__(self, user: Annotated[User, Depends(RBACUser)], request: Request) -> None:
+    def __init__(self, user: Annotated[User, Depends(get_admin_user)], request: Request) -> None:
         self.user = user
         self.request = request
 
@@ -38,10 +40,10 @@ class OrganizationContext(ContextualAuthz[User]):
         return True
 
 
-class TeamContext(ContextualAuthz[User]):
+class TeamContext(ContextualAuthz):
     """Context for team membership checks."""
 
-    def __init__(self, user: Annotated[User, Depends(RBACUser)], request: Request) -> None:
+    def __init__(self, user: Annotated[User, Depends(get_admin_user)], request: Request) -> None:
         self.user = user
         self.request = request
 
@@ -54,18 +56,16 @@ def app_with_ui() -> FastAPI:
     """Create a FastAPI app with RBAC UI enabled."""
     app = FastAPI()
 
-    rbac: RBACAuthz[Any] = RBACAuthz(
+    RBACAuthz(
         app,
-        get_roles=lambda u: u.roles,
         permissions={
             "admin": {Global("report:*"), Global("user:*")},
             "instructor": {Contextual("report:read"), Contextual("student:view")},
             "viewer": {Contextual("report:read")},
         },
+        roles_dependency=get_admin_roles,
         ui_path="/_rbac",
     )
-
-    AuthUser = create_auth_dependency(rbac, user_dependency=get_admin_user)
 
     # Create router with RBAC permissions
     router = RBACRouter(
@@ -74,7 +74,7 @@ def app_with_ui() -> FastAPI:
     )
 
     @router.get("/reports", summary="List reports", tags=["reports"])
-    async def list_reports(user: User = Depends(AuthUser)) -> dict[str, list[str]]:
+    async def list_reports() -> dict[str, list[str]]:
         return {"reports": []}
 
     @router.post(
@@ -83,7 +83,7 @@ def app_with_ui() -> FastAPI:
         summary="Create report",
         tags=["reports"],
     )
-    async def create_report(user: User = Depends(AuthUser)) -> dict[str, str]:
+    async def create_report() -> dict[str, str]:
         return {"id": "new-report"}
 
     @router.get(
@@ -92,7 +92,7 @@ def app_with_ui() -> FastAPI:
         summary="Get report by ID",
         tags=["reports"],
     )
-    async def get_report(id: str, user: User = Depends(AuthUser)) -> dict[str, str]:
+    async def get_report(id: str) -> dict[str, str]:
         return {"id": id}
 
     app.include_router(router, prefix="/api/v1")
@@ -261,10 +261,10 @@ class TestUINotMounted:
     def test_no_ui_when_path_not_set(self) -> None:
         """UI routes should not exist when ui_path is not set."""
         app = FastAPI()
-        RBACAuthz[Any](
+        RBACAuthz(
             app,
-            get_roles=lambda u: u.roles,
             permissions={"admin": {Global("*")}},
+            roles_dependency=get_admin_roles,
             # ui_path not set
         )
 
@@ -282,10 +282,10 @@ class TestSchemaBuilding:
     def test_empty_permissions(self) -> None:
         """Schema works with empty permissions."""
         app = FastAPI()
-        RBACAuthz[Any](
+        RBACAuthz(
             app,
-            get_roles=lambda u: u.roles,
             permissions={},
+            roles_dependency=get_admin_roles,
             ui_path="/_rbac",
         )
 
@@ -302,10 +302,10 @@ class TestSchemaBuilding:
     def test_custom_ui_path(self) -> None:
         """UI can be mounted at custom path."""
         app = FastAPI()
-        RBACAuthz[Any](
+        RBACAuthz(
             app,
-            get_roles=lambda u: u.roles,
             permissions={"admin": {Global("*")}},
+            roles_dependency=get_admin_roles,
             ui_path="/admin/authorization",
         )
 

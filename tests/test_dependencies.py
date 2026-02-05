@@ -1,18 +1,17 @@
-from typing import Annotated, Any
+"""Tests for authorization dependency behavior."""
 
-import pytest
+from typing import Annotated
+
 from fastapi import Depends, FastAPI, Request
 from fastapi.testclient import TestClient
 
 from fastapi_rbac import (
     Contextual,
     ContextualAuthz,
-    Forbidden,
     Global,
     RBACAuthz,
-    RBACUser,
-    create_auth_dependency,
 )
+from fastapi_rbac.router import RBACRouter
 
 
 class User:
@@ -21,16 +20,25 @@ class User:
         self.roles = roles
 
 
-def get_current_user() -> User:
-    return User(id="user-1", roles={"instructor"})
+# Module-level user to allow tests to control which user is returned
+_test_user: User | None = None
 
 
-def get_admin_user() -> User:
-    return User(id="admin-1", roles={"admin"})
+def get_test_user() -> User:
+    if _test_user is None:
+        raise RuntimeError("Test user not configured")
+    return _test_user
 
 
-class InstructorRoleContext(ContextualAuthz[User]):
-    def __init__(self, user: Annotated[User, Depends(RBACUser)], request: Request) -> None:
+def get_test_user_roles() -> set[str]:
+    """Returns the roles for the current test user."""
+    if _test_user is None:
+        raise RuntimeError("Test user not configured")
+    return _test_user.roles
+
+
+class InstructorRoleContext(ContextualAuthz):
+    def __init__(self, user: Annotated[User, Depends(get_test_user)], request: Request) -> None:
         self.user = user
         self.request = request
 
@@ -38,394 +46,274 @@ class InstructorRoleContext(ContextualAuthz[User]):
         return "instructor" in self.user.roles
 
 
-class TestCreateAuthDependency:
-    def test_returns_user_when_authorized(self) -> None:
+class AlwaysPassesContext(ContextualAuthz):
+    def __init__(self, user: Annotated[User, Depends(get_test_user)], request: Request) -> None:
+        self.user = user
+        self.request = request
+
+    async def has_permissions(self) -> bool:
+        return True
+
+
+class AlwaysFailsContext(ContextualAuthz):
+    def __init__(self, user: Annotated[User, Depends(get_test_user)], request: Request) -> None:
+        self.user = user
+        self.request = request
+
+    async def has_permissions(self) -> bool:
+        return False
+
+
+class TestAuthorizationDependency:
+    """Test authorization behavior via RBACRouter and TestClient."""
+
+    def test_raises_forbidden_when_no_grants(self) -> None:
+        """User with unknown role should be forbidden."""
+        global _test_user
+        _test_user = User(id="user-1", roles={"unknown_role"})
+
         app = FastAPI()
-        rbac: RBACAuthz[Any] = RBACAuthz(
+        RBACAuthz(
             app,
-            get_roles=lambda u: u.roles,
             permissions={
                 "admin": {Global("report:*")},
             },
+            roles_dependency=get_test_user_roles,
         )
-        AuthUser = create_auth_dependency(rbac, user_dependency=get_admin_user)
 
-        @app.get("/test")
-        async def endpoint(user: Annotated[User, Depends(AuthUser)]) -> dict[str, str]:
-            return {"user_id": user.id}
+        router = RBACRouter(permissions={"report:read"})
+
+        @router.get("/reports")
+        async def get_reports() -> dict[str, str]:
+            return {"status": "ok"}
+
+        app.include_router(router)
 
         client = TestClient(app)
-        # Note: This test doesn't go through RBACRouter so no permission check
-        response = client.get("/test")
-        assert response.status_code == 200
-        assert response.json() == {"user_id": "admin-1"}
+        response = client.get("/reports")
+        assert response.status_code == 403
 
-    def test_stores_user_in_request_state(self) -> None:
+    def test_passes_with_global_permission(self) -> None:
+        """User with global permission should pass."""
+        global _test_user
+        _test_user = User(id="admin-1", roles={"admin"})
+
         app = FastAPI()
-        rbac: RBACAuthz[Any] = RBACAuthz(
+        RBACAuthz(
             app,
-            get_roles=lambda u: u.roles,
+            permissions={
+                "admin": {Global("report:*")},
+            },
+            roles_dependency=get_test_user_roles,
+        )
+
+        router = RBACRouter(permissions={"report:read"})
+
+        @router.get("/reports")
+        async def get_reports() -> dict[str, str]:
+            return {"status": "ok"}
+
+        app.include_router(router)
+
+        client = TestClient(app)
+        response = client.get("/reports")
+        assert response.status_code == 200
+
+    def test_raises_forbidden_when_no_permission(self) -> None:
+        """User without required permission should be forbidden."""
+        global _test_user
+        _test_user = User(id="user-1", roles={"user"})
+
+        app = FastAPI()
+        RBACAuthz(
+            app,
+            permissions={
+                "user": {Contextual("report:read")},  # User has report:read only
+            },
+            roles_dependency=get_test_user_roles,
+        )
+
+        # Require report:delete which user doesn't have
+        router = RBACRouter(permissions={"report:delete"})
+
+        @router.get("/reports")
+        async def get_reports() -> dict[str, str]:
+            return {"status": "ok"}
+
+        app.include_router(router)
+
+        client = TestClient(app)
+        response = client.get("/reports")
+        assert response.status_code == 403
+
+    def test_runs_context_checks_for_contextual_permissions(self) -> None:
+        """Contextual permission with passing context should pass."""
+        global _test_user
+        _test_user = User(id="user-1", roles={"instructor"})
+
+        app = FastAPI()
+        RBACAuthz(
+            app,
             permissions={
                 "instructor": {Contextual("report:read")},
             },
+            roles_dependency=get_test_user_roles,
         )
-        AuthUser = create_auth_dependency(rbac, user_dependency=get_current_user)
 
-        captured_user: User | None = None
+        router = RBACRouter(
+            permissions={"report:read"},
+            contexts=[InstructorRoleContext],
+        )
 
-        @app.get("/test")
-        async def endpoint(request: Request, user: Annotated[User, Depends(AuthUser)]) -> dict[str, str]:
-            nonlocal captured_user
-            captured_user = request.state.user
-            return {"user_id": user.id}
+        @router.get("/reports")
+        async def get_reports() -> dict[str, str]:
+            return {"status": "ok"}
+
+        app.include_router(router)
 
         client = TestClient(app)
-        response = client.get("/test")
+        response = client.get("/reports")
         assert response.status_code == 200
-        assert captured_user is not None
-        assert captured_user.id == "user-1"
 
-    def test_works_with_async_user_dependency(self) -> None:
-        app = FastAPI()
-        rbac: RBACAuthz[Any] = RBACAuthz(
-            app,
-            get_roles=lambda u: u.roles,
-            permissions={
-                "admin": {Global("*")},
-            },
-        )
-
-        async def get_async_user() -> User:
-            return User(id="async-user", roles={"admin"})
-
-        AuthUser = create_auth_dependency(rbac, user_dependency=get_async_user)
-
-        @app.get("/test")
-        async def endpoint(user: Annotated[User, Depends(AuthUser)]) -> dict[str, str]:
-            return {"user_id": user.id}
-
-        client = TestClient(app)
-        response = client.get("/test")
-        assert response.status_code == 200
-        assert response.json() == {"user_id": "async-user"}
-
-
-class TestEvaluatePermissions:
-    @pytest.mark.anyio
-    async def test_raises_forbidden_when_no_grants(self) -> None:
-        from fastapi_rbac import evaluate_permissions
+    def test_raises_forbidden_when_context_check_fails(self) -> None:
+        """Contextual permission with failing context should be forbidden."""
+        global _test_user
+        # User has role but context will fail (user doesn't have "instructor" role)
+        _test_user = User(id="user-1", roles={"user"})
 
         app = FastAPI()
-        rbac: RBACAuthz[Any] = RBACAuthz(
+        RBACAuthz(
             app,
-            get_roles=lambda u: u.roles,
-            permissions={
-                "admin": {Global("report:*")},
-            },
-        )
-        user = User(id="user-1", roles={"unknown_role"})
-
-        scope: dict[str, str] = {"type": "http", "method": "GET", "path": "/test"}
-        request = Request(scope)
-
-        with pytest.raises(Forbidden):
-            await evaluate_permissions(
-                user=user,
-                request=request,
-                rbac=rbac,
-                required_permissions={"report:read"},
-                context_classes=[],
-            )
-
-    @pytest.mark.anyio
-    async def test_passes_with_global_permission(self) -> None:
-        from fastapi_rbac import evaluate_permissions
-
-        app = FastAPI()
-        rbac: RBACAuthz[Any] = RBACAuthz(
-            app,
-            get_roles=lambda u: u.roles,
-            permissions={
-                "admin": {Global("report:*")},
-            },
-        )
-        user = User(id="admin-1", roles={"admin"})
-
-        scope: dict[str, str] = {"type": "http", "method": "GET", "path": "/test"}
-        request = Request(scope)
-
-        # Should not raise
-        await evaluate_permissions(
-            user=user,
-            request=request,
-            rbac=rbac,
-            required_permissions={"report:read"},
-            context_classes=[],
-        )
-
-    @pytest.mark.anyio
-    async def test_raises_forbidden_when_no_permission(self) -> None:
-        from fastapi_rbac import evaluate_permissions
-
-        app = FastAPI()
-        rbac: RBACAuthz[Any] = RBACAuthz(
-            app,
-            get_roles=lambda u: u.roles,
             permissions={
                 "user": {Contextual("report:read")},
             },
+            roles_dependency=get_test_user_roles,
         )
-        user = User(id="user-1", roles={"user"})
 
-        scope: dict[str, str] = {"type": "http", "method": "GET", "path": "/test"}
-        request = Request(scope)
+        router = RBACRouter(
+            permissions={"report:read"},
+            contexts=[InstructorRoleContext],  # Will fail - user doesn't have instructor role
+        )
 
-        # User has report:read but not report:delete
-        with pytest.raises(Forbidden):
-            await evaluate_permissions(
-                user=user,
-                request=request,
-                rbac=rbac,
-                required_permissions={"report:delete"},
-                context_classes=[],
-            )
+        @router.get("/reports")
+        async def get_reports() -> dict[str, str]:
+            return {"status": "ok"}
 
-    @pytest.mark.anyio
-    async def test_runs_context_checks_for_contextual_permissions(self) -> None:
-        from fastapi_rbac import evaluate_permissions
+        app.include_router(router)
+
+        client = TestClient(app)
+        response = client.get("/reports")
+        assert response.status_code == 403
+
+    def test_global_permission_bypasses_context_checks(self) -> None:
+        """User with global permission should bypass context checks."""
+        global _test_user
+        _test_user = User(id="admin-1", roles={"admin"})
 
         app = FastAPI()
-        rbac: RBACAuthz[Any] = RBACAuthz(
+        RBACAuthz(
             app,
-            get_roles=lambda u: u.roles,
-            permissions={
-                "instructor": {Contextual("report:read")},
-            },
-        )
-        user = User(id="user-1", roles={"instructor"})
-
-        scope: dict[str, str] = {"type": "http", "method": "GET", "path": "/test"}
-        request = Request(scope)
-
-        # Should pass because InstructorRoleContext returns True for instructors
-        await evaluate_permissions(
-            user=user,
-            request=request,
-            rbac=rbac,
-            required_permissions={"report:read"},
-            context_classes=[InstructorRoleContext],
-        )
-
-    @pytest.mark.anyio
-    async def test_raises_forbidden_when_context_check_fails(self) -> None:
-        from fastapi_rbac import evaluate_permissions
-
-        app = FastAPI()
-        rbac: RBACAuthz[Any] = RBACAuthz(
-            app,
-            get_roles=lambda u: u.roles,
-            permissions={
-                "user": {Contextual("report:read")},
-            },
-        )
-        # User has the role but not "instructor" role required by context
-        user = User(id="user-1", roles={"user"})
-
-        scope: dict[str, str] = {"type": "http", "method": "GET", "path": "/test"}
-        request = Request(scope)
-
-        # Context check will fail because user doesn't have instructor role
-        with pytest.raises(Forbidden):
-            await evaluate_permissions(
-                user=user,
-                request=request,
-                rbac=rbac,
-                required_permissions={"report:read"},
-                context_classes=[InstructorRoleContext],
-            )
-
-    @pytest.mark.anyio
-    async def test_global_permission_bypasses_context_checks(self) -> None:
-        from fastapi_rbac import evaluate_permissions
-
-        app = FastAPI()
-        rbac: RBACAuthz[Any] = RBACAuthz(
-            app,
-            get_roles=lambda u: u.roles,
             permissions={
                 "admin": {Global("report:*")},
             },
-        )
-        # Admin user - should bypass context check
-        user = User(id="admin-1", roles={"admin"})
-
-        scope: dict[str, str] = {"type": "http", "method": "GET", "path": "/test"}
-        request = Request(scope)
-
-        class AlwaysFailsContext(ContextualAuthz[User]):
-            def __init__(self, user: User, request: Request) -> None:
-                self.user = user
-                self.request = request
-
-            async def has_permissions(self) -> bool:
-                return False
-
-        # Should pass even with failing context because admin has global permission
-        await evaluate_permissions(
-            user=user,
-            request=request,
-            rbac=rbac,
-            required_permissions={"report:read"},
-            context_classes=[AlwaysFailsContext],
+            roles_dependency=get_test_user_roles,
         )
 
-    @pytest.mark.anyio
-    async def test_raises_runtime_error_when_no_permissions_or_contexts(self) -> None:
-        from fastapi_rbac import evaluate_permissions
+        router = RBACRouter(
+            permissions={"report:read"},
+            contexts=[AlwaysFailsContext],  # Would fail, but global permission bypasses
+        )
+
+        @router.get("/reports")
+        async def get_reports() -> dict[str, str]:
+            return {"status": "ok"}
+
+        app.include_router(router)
+
+        client = TestClient(app)
+        response = client.get("/reports")
+        assert response.status_code == 200
+
+    def test_runs_context_when_only_contexts_provided(self) -> None:
+        """Contexts-only authorization should work when context passes."""
+        global _test_user
+        _test_user = User(id="user-1", roles={"instructor"})
 
         app = FastAPI()
-        rbac: RBACAuthz[Any] = RBACAuthz(
+        RBACAuthz(
             app,
-            get_roles=lambda u: u.roles,
-            permissions={
-                "admin": {Global("*")},
-            },
-        )
-        user = User(id="admin-1", roles={"admin"})
-
-        scope: dict[str, str] = {"type": "http", "method": "GET", "path": "/test"}
-        request = Request(scope)
-
-        with pytest.raises(RuntimeError, match="protected with permissions or contexts"):
-            await evaluate_permissions(
-                user=user,
-                request=request,
-                rbac=rbac,
-                required_permissions=set(),
-                context_classes=[],
-            )
-
-    @pytest.mark.anyio
-    async def test_runs_context_when_only_contexts_provided(self) -> None:
-        from fastapi_rbac import evaluate_permissions
-
-        app = FastAPI()
-        rbac: RBACAuthz[Any] = RBACAuthz(
-            app,
-            get_roles=lambda u: u.roles,
             permissions={
                 "instructor": {Contextual("report:read")},
             },
-        )
-        user = User(id="user-1", roles={"instructor"})
-
-        scope: dict[str, str] = {"type": "http", "method": "GET", "path": "/test"}
-        request = Request(scope)
-
-        # No required_permissions, only context_classes
-        await evaluate_permissions(
-            user=user,
-            request=request,
-            rbac=rbac,
-            required_permissions=set(),
-            context_classes=[InstructorRoleContext],
+            roles_dependency=get_test_user_roles,
         )
 
-    @pytest.mark.anyio
-    async def test_fails_when_only_contexts_and_context_fails(self) -> None:
-        from fastapi_rbac import evaluate_permissions
+        # No permissions, only contexts
+        router = RBACRouter(contexts=[InstructorRoleContext])
+
+        @router.get("/reports")
+        async def get_reports() -> dict[str, str]:
+            return {"status": "ok"}
+
+        app.include_router(router)
+
+        client = TestClient(app)
+        response = client.get("/reports")
+        assert response.status_code == 200
+
+    def test_fails_when_only_contexts_and_context_fails(self) -> None:
+        """Contexts-only authorization should fail when context fails."""
+        global _test_user
+        _test_user = User(id="user-1", roles={"user"})  # Not an instructor
 
         app = FastAPI()
-        rbac: RBACAuthz[Any] = RBACAuthz(
+        RBACAuthz(
             app,
-            get_roles=lambda u: u.roles,
             permissions={
                 "user": {Contextual("report:read")},
             },
+            roles_dependency=get_test_user_roles,
         )
-        user = User(id="user-1", roles={"user"})
 
-        scope: dict[str, str] = {"type": "http", "method": "GET", "path": "/test"}
-        request = Request(scope)
+        # No permissions, only contexts - context will fail
+        router = RBACRouter(contexts=[InstructorRoleContext])
 
-        # No required_permissions, only context_classes which will fail
-        with pytest.raises(Forbidden):
-            await evaluate_permissions(
-                user=user,
-                request=request,
-                rbac=rbac,
-                required_permissions=set(),
-                context_classes=[InstructorRoleContext],
-            )
+        @router.get("/reports")
+        async def get_reports() -> dict[str, str]:
+            return {"status": "ok"}
 
-    @pytest.mark.anyio
-    async def test_raises_forbidden_when_some_permissions_pass_and_some_fail(self) -> None:
-        """Test that ALL required permissions must be satisfied."""
-        from fastapi_rbac import evaluate_permissions
+        app.include_router(router)
+
+        client = TestClient(app)
+        response = client.get("/reports")
+        assert response.status_code == 403
+
+    def test_raises_forbidden_when_one_of_multiple_contexts_fails(self) -> None:
+        """All context checks must pass."""
+        global _test_user
+        _test_user = User(id="user-1", roles={"instructor"})
 
         app = FastAPI()
-        rbac: RBACAuthz[Any] = RBACAuthz(
+        RBACAuthz(
             app,
-            get_roles=lambda u: u.roles,
-            permissions={
-                "user": {Contextual("report:read")},  # User only has report:read
-            },
-        )
-        user = User(id="user-1", roles={"user"})
-
-        scope: dict[str, str] = {"type": "http", "method": "GET", "path": "/test"}
-        request = Request(scope)
-
-        # User has report:read but not report:delete - should fail
-        with pytest.raises(Forbidden):
-            await evaluate_permissions(
-                user=user,
-                request=request,
-                rbac=rbac,
-                required_permissions={"report:read", "report:delete"},
-                context_classes=[],
-            )
-
-    @pytest.mark.anyio
-    async def test_raises_forbidden_when_one_of_multiple_contexts_fails(self) -> None:
-        """Test that ALL context checks must pass."""
-        from fastapi_rbac import evaluate_permissions
-
-        app = FastAPI()
-        rbac: RBACAuthz[Any] = RBACAuthz(
-            app,
-            get_roles=lambda u: u.roles,
             permissions={
                 "instructor": {Contextual("report:read")},
             },
+            roles_dependency=get_test_user_roles,
         )
-        user = User(id="user-1", roles={"instructor"})
 
-        scope: dict[str, str] = {"type": "http", "method": "GET", "path": "/test"}
-        request = Request(scope)
+        # Multiple contexts - one passes, one fails
+        router = RBACRouter(
+            permissions={"report:read"},
+            contexts=[AlwaysPassesContext, AlwaysFailsContext],
+        )
 
-        class AlwaysPassesContext(ContextualAuthz[User]):
-            def __init__(self, user: User, request: Request) -> None:
-                self.user = user
-                self.request = request
+        @router.get("/reports")
+        async def get_reports() -> dict[str, str]:
+            return {"status": "ok"}
 
-            async def has_permissions(self) -> bool:
-                return True
+        app.include_router(router)
 
-        class AlwaysFailsContext(ContextualAuthz[User]):
-            def __init__(self, user: User, request: Request) -> None:
-                self.user = user
-                self.request = request
-
-            async def has_permissions(self) -> bool:
-                return False
-
-        # First context passes, second fails - should raise Forbidden
-        with pytest.raises(Forbidden):
-            await evaluate_permissions(
-                user=user,
-                request=request,
-                rbac=rbac,
-                required_permissions={"report:read"},
-                context_classes=[AlwaysPassesContext, AlwaysFailsContext],
-            )
+        client = TestClient(app)
+        response = client.get("/reports")
+        assert response.status_code == 403
